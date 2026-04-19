@@ -1,0 +1,120 @@
+"""TOML configuration loader.
+
+The full PRD config tree is large; the demo only reads the knobs it actually
+honours. Unknown keys are ignored rather than rejected so future config files
+remain forward-compatible.
+"""
+
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover — project requires 3.11+, kept for safety.
+    import tomli as tomllib  # type: ignore
+
+
+@dataclass
+class RuntimeConfig:
+    workspace_root: Path = Path("./workspace")
+    log_level: str = "INFO"
+
+
+@dataclass
+class RenderingConfig:
+    width: int = 1080
+    height: int = 1920
+    fps: int = 30
+    background_color: str = "#0A1929"
+
+
+@dataclass
+class TTSConfig:
+    provider: str = "edge"
+    voice: str = "zh-CN-YunxiNeural"
+    rate: str = "+0%"
+    pitch: str = "+0Hz"
+
+
+@dataclass
+class FFmpegConfig:
+    preset: str = "medium"
+    crf: int = 23
+    audio_bitrate: str = "192k"
+
+
+@dataclass
+class SubtitleConfig:
+    font_name: str = "PingFang SC"
+    font_size: int = 56
+    primary_color: str = "&H00FFFFFF"
+    outline_color: str = "&H00000000"
+    alignment: int = 2
+    margin_v: int = 200
+
+
+@dataclass
+class Config:
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    rendering: RenderingConfig = field(default_factory=RenderingConfig)
+    tts: TTSConfig = field(default_factory=TTSConfig)
+    ffmpeg: FFmpegConfig = field(default_factory=FFmpegConfig)
+    subtitles: SubtitleConfig = field(default_factory=SubtitleConfig)
+
+
+def load_config(path: Path | str | None = None) -> Config:
+    """Load ``config.toml`` from ``path`` (or return defaults if missing)."""
+    if path is None:
+        return Config()
+    path = Path(path)
+    if not path.exists():
+        return Config()
+
+    with path.open("rb") as fh:
+        data = tomllib.load(fh)
+
+    cfg = Config()
+    if "runtime" in data:
+        cfg.runtime = RuntimeConfig(
+            workspace_root=Path(
+                data["runtime"].get("workspace_root", cfg.runtime.workspace_root)
+            ),
+            log_level=data["runtime"].get("log_level", cfg.runtime.log_level),
+        )
+    if "rendering" in data:
+        r = data["rendering"]
+        cfg.rendering = RenderingConfig(
+            width=r.get("width", cfg.rendering.width),
+            height=r.get("height", cfg.rendering.height),
+            fps=r.get("fps", cfg.rendering.fps),
+            background_color=r.get("background_color", cfg.rendering.background_color),
+        )
+    if "tts" in data:
+        t = data["tts"]
+        cfg.tts = TTSConfig(
+            provider=t.get("provider", cfg.tts.provider),
+            voice=t.get("voice", cfg.tts.voice),
+            rate=t.get("rate", cfg.tts.rate),
+            pitch=t.get("pitch", cfg.tts.pitch),
+        )
+    if "ffmpeg" in data:
+        f = data["ffmpeg"]
+        cfg.ffmpeg = FFmpegConfig(
+            preset=f.get("preset", cfg.ffmpeg.preset),
+            crf=f.get("crf", cfg.ffmpeg.crf),
+            audio_bitrate=f.get("audio_bitrate", cfg.ffmpeg.audio_bitrate),
+        )
+    if "subtitles" in data:
+        s = data["subtitles"]
+        cfg.subtitles = SubtitleConfig(
+            font_name=s.get("font_name", cfg.subtitles.font_name),
+            font_size=s.get("font_size", cfg.subtitles.font_size),
+            primary_color=s.get("primary_color", cfg.subtitles.primary_color),
+            outline_color=s.get("outline_color", cfg.subtitles.outline_color),
+            alignment=s.get("alignment", cfg.subtitles.alignment),
+            margin_v=s.get("margin_v", cfg.subtitles.margin_v),
+        )
+    return cfg
