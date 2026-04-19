@@ -1,7 +1,7 @@
 """Provider system for LLM and TTS backends.
 
 This module provides:
-- LLM Provider abstraction for parsing Markdown → ShotList
+- LLM Provider abstraction for parsing Markdown -> ShotList
 - TTS Provider abstraction (edge already exists, adding Azure/ElevenLabs)
 - Base classes and registry for easy extension
 
@@ -9,10 +9,7 @@ Usage:
     from videoflow.providers import get_llm_provider, LLMProvider
 
     provider = get_llm_provider("deepseek")
-    result = provider.parse("""
-    # 标题
-    内容...
-    """)
+    result = provider.parse("topic here")
 """
 
 from __future__ import annotations

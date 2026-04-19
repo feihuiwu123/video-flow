@@ -20,6 +20,7 @@ dependencies = [
     "typer>=0.12",
     "rich>=13.0",
     "pillow>=10.0",
+    "openai>=1.0",  # For DeepSeek/OpenAI LLM providers
     "tomli>=2.0; python_version < '3.11'",
 ]
 

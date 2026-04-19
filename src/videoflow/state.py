@@ -359,6 +359,115 @@ def _row_to_event(row: sqlite3.Row) -> EventRow:
     )
 
 
+@dataclass
+class StageTiming:
+    """Per-stage timing derived from paired ``started``/``done`` events."""
+
+    stage: str
+    started_at: Optional[str]  # ISO 8601 string; None if never started
+    ended_at: Optional[str]  # ISO 8601 string; None if never finished
+    status: str  # "pending" | "running" | "done" | "failed"
+    duration_s: Optional[float]
+
+
+def _parse_iso(ts: str) -> datetime:
+    """Parse an ISO 8601 string produced by ``_utcnow``. Kept local so the
+    public API doesn't leak ``datetime``."""
+    # datetime.fromisoformat handles the output of ``_utcnow`` verbatim.
+    return datetime.fromisoformat(ts)
+
+
+def stage_timings(db_path: Path, project_id: str) -> list[StageTiming]:
+    """Aggregate events into one row per stage.
+
+    Stages that never started are returned with status ``"pending"``.
+    Stages that started but never reported ``done`` are ``"running"``.
+    ``failed`` overrides ``done`` if both are present (latest wins).
+    """
+    events = list_events(db_path, project_id=project_id)
+    by_stage: dict[str, list[EventRow]] = {}
+    for ev in events:
+        by_stage.setdefault(ev.stage, []).append(ev)
+
+    out: list[StageTiming] = []
+    for stage in STAGES_ORDERED:
+        rows = by_stage.get(stage, [])
+        started = next((e for e in rows if e.status == STATUS_STARTED), None)
+        done = next((e for e in rows if e.status == STATUS_DONE), None)
+        failed = next((e for e in rows if e.status == STATUS_FAILED), None)
+
+        if failed is not None:
+            status = "failed"
+            ended_ts = failed.ts
+        elif done is not None:
+            status = "done"
+            ended_ts = done.ts
+        elif started is not None:
+            status = "running"
+            ended_ts = None
+        else:
+            status = "pending"
+            ended_ts = None
+
+        started_ts = started.ts if started is not None else None
+        duration_s: Optional[float] = None
+        if started_ts and ended_ts:
+            duration_s = round(
+                (_parse_iso(ended_ts) - _parse_iso(started_ts)).total_seconds(), 3
+            )
+
+        out.append(
+            StageTiming(
+                stage=stage,
+                started_at=started_ts,
+                ended_at=ended_ts,
+                status=status,
+                duration_s=duration_s,
+            )
+        )
+    return out
+
+
+def event_summary(db_path: Path, project_id: str) -> dict[str, Any]:
+    """One-shot roll-up for ``video-agent trace --summary`` + dashboards.
+
+    Returns a dict with:
+        - total_events:   count across all stages
+        - failures:       count of ``failed`` events
+        - first_ts / last_ts: wall-clock range
+        - wall_time_s:    last_ts - first_ts (``None`` when empty)
+        - stages:         list of StageTiming as dicts
+    """
+    events = list_events(db_path, project_id=project_id)
+    timings = stage_timings(db_path, project_id)
+
+    if not events:
+        return {
+            "total_events": 0,
+            "failures": 0,
+            "first_ts": None,
+            "last_ts": None,
+            "wall_time_s": None,
+            "stages": [t.__dict__ for t in timings],
+        }
+
+    failures = sum(1 for e in events if e.status == STATUS_FAILED)
+    first_ts = events[0].ts
+    last_ts = events[-1].ts
+    wall_time_s = round(
+        (_parse_iso(last_ts) - _parse_iso(first_ts)).total_seconds(), 3
+    )
+
+    return {
+        "total_events": len(events),
+        "failures": failures,
+        "first_ts": first_ts,
+        "last_ts": last_ts,
+        "wall_time_s": wall_time_s,
+        "stages": [t.__dict__ for t in timings],
+    }
+
+
 # --- Reviews -------------------------------------------------------------
 
 
@@ -467,6 +576,7 @@ __all__ = [
     "ProjectRow",
     "EventRow",
     "ReviewRow",
+    "StageTiming",
     "STAGES_ORDERED",
     "STAGE_PARSE",
     "STAGE_TTS",
@@ -479,6 +589,7 @@ __all__ = [
     "STATUS_FAILED",
     "connect",
     "default_db_path",
+    "event_summary",
     "get_project",
     "init_db",
     "list_events",
@@ -488,5 +599,6 @@ __all__ = [
     "record_event",
     "record_review",
     "stage_readiness",
+    "stage_timings",
     "upsert_project",
 ]

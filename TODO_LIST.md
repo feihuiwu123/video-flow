@@ -148,9 +148,9 @@
 
 ## M7 · 性能与可观测性(PRD §2.2 NFR)
 
-- [ ] ⬜ 缓存层(SHA256 键值 · TTS / visuals / stock)
-- [ ] ⬜ 并发策略(`asyncio.gather` Shot 级并行)
-- [ ] ⬜ events 表查询接口 + dashboard(100% trace 覆盖)
+- [x] ✅ 缓存层(SHA256 键值 · TTS / visuals / stock)— `src/videoflow/cache.py`
+- [x] ✅ 并发策略(TTS `asyncio.gather` + visuals/scenes `ThreadPoolExecutor`)
+- [x] ✅ events 表查询接口(`state.stage_timings` / `event_summary` + `trace --timings` / `--summary`)
 - [ ] ⬜ 基准测试 CI(60s 视频 ≤ 10min)
 - [ ] ⬜ 长跑稳定性测试(30 天无泄漏)
 
@@ -172,7 +172,7 @@
 
 ---
 
-**当前进度**: M0 + M1 + M2(L部分) + M3.1 + M3.2 + M3.3 + M3.4a + M3.4b + M4 + M5 + M6 完成。
+**当前进度**: M0 + M1 + M2(L部分) + M3.1 + M3.2 + M3.3 + M3.4a + M3.4b + M4 + M5 + M6 + M7(3/5) 完成。
 
 已完成:
 - M0: 项目基础设施

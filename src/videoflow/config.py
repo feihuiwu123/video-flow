@@ -99,6 +99,36 @@ class AlignConfig:
 
 
 @dataclass
+class CacheConfig:
+    """On-disk content-addressable cache for TTS / visuals / stock footage (M7).
+
+    ``enabled=False`` is the historical default — callers pay nothing for
+    the feature until they opt in via ``config.toml``.
+    """
+
+    enabled: bool = False
+    # Relative to workspace_root unless absolute.
+    directory: str = "cache"
+
+
+@dataclass
+class PerformanceConfig:
+    """Concurrency limits across pipeline stages (M7)."""
+
+    # Parallel TTS synthesize calls. edge-tts is network-bound, so a few
+    # concurrent calls help a lot but >8 rarely pays off.
+    tts_concurrency: int = 4
+
+    # Parallel Pillow visual renders. CPU-bound; default to CPU count at
+    # runtime when <= 0.
+    visuals_concurrency: int = 4
+
+    # Parallel FFmpeg scene composes. Each subprocess uses multiple threads
+    # internally — keep low to avoid over-subscription.
+    scenes_concurrency: int = 2
+
+
+@dataclass
 class Config:
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     rendering: RenderingConfig = field(default_factory=RenderingConfig)
@@ -107,6 +137,8 @@ class Config:
     ffmpeg: FFmpegConfig = field(default_factory=FFmpegConfig)
     subtitles: SubtitleConfig = field(default_factory=SubtitleConfig)
     align: AlignConfig = field(default_factory=AlignConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
+    performance: PerformanceConfig = field(default_factory=PerformanceConfig)
 
 
 def load_config(path: Path | str | None = None) -> Config:
@@ -180,5 +212,22 @@ def load_config(path: Path | str | None = None) -> Config:
             model_size=a.get("model_size", cfg.align.model_size),
             language=a.get("language", cfg.align.language),
             word_timestamps=a.get("word_timestamps", cfg.align.word_timestamps),
+        )
+    if "cache" in data:
+        c = data["cache"]
+        cfg.cache = CacheConfig(
+            enabled=c.get("enabled", cfg.cache.enabled),
+            directory=c.get("directory", cfg.cache.directory),
+        )
+    if "performance" in data:
+        p = data["performance"]
+        cfg.performance = PerformanceConfig(
+            tts_concurrency=p.get("tts_concurrency", cfg.performance.tts_concurrency),
+            visuals_concurrency=p.get(
+                "visuals_concurrency", cfg.performance.visuals_concurrency
+            ),
+            scenes_concurrency=p.get(
+                "scenes_concurrency", cfg.performance.scenes_concurrency
+            ),
         )
     return cfg

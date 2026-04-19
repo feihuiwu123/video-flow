@@ -18,6 +18,9 @@ import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Optional
+
+from videoflow.cache import CacheKey, CacheStore
 
 
 class TTSProvider(ABC):
@@ -89,22 +92,58 @@ async def synthesize_all(
     provider: TTSProvider,
     items: list[tuple[str, str, Path]],
     max_concurrency: int = 4,
+    cache: Optional[CacheStore] = None,
+    cache_params: Optional[dict[str, str]] = None,
 ) -> dict[str, float]:
-    """Synthesize multiple clips concurrently.
+    """Synthesize multiple clips concurrently, optionally via a content cache.
 
     Args:
         provider: TTS backend to call.
         items: Tuples of ``(shot_id, text, output_path)``.
         max_concurrency: Upper bound on in-flight ``synthesize`` calls.
+        cache: Optional :class:`CacheStore`. When supplied we short-circuit
+            on exact (voice/rate/pitch/text) matches and copy the cached
+            MP3 to ``output_path``. Misses are written to ``output_path``
+            first and then ingested into the cache.
+        cache_params: Required alongside ``cache``. Must contain
+            ``voice``, ``rate``, ``pitch`` — these are the non-text inputs
+            that affect the audio bytes.
 
     Returns:
         Mapping of ``shot_id`` to audio duration in seconds.
     """
     sem = asyncio.Semaphore(max_concurrency)
 
+    if cache is not None and cache_params is None:
+        raise ValueError("cache=... requires cache_params (voice/rate/pitch)")
+
     async def _one(shot_id: str, text: str, path: Path) -> tuple[str, float]:
+        # Cache lookup runs outside the semaphore — hits don't spend a slot.
+        if cache is not None and cache_params is not None:
+            key = CacheKey.from_tts(
+                text=text,
+                voice=cache_params["voice"],
+                rate=cache_params["rate"],
+                pitch=cache_params["pitch"],
+            )
+            hit = cache.get(key, kind="tts", ext="mp3")
+            if hit is not None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(hit, path)
+                return shot_id, probe_duration(path)
+
         async with sem:
             dur = await provider.synthesize(text, path)
+
+        # Populate cache on first render so later runs are free.
+        if cache is not None and cache_params is not None:
+            key = CacheKey.from_tts(
+                text=text,
+                voice=cache_params["voice"],
+                rate=cache_params["rate"],
+                pitch=cache_params["pitch"],
+            )
+            cache.put(key, path, kind="tts", ext="mp3", move=False)
         return shot_id, dur
 
     pairs = await asyncio.gather(*(_one(sid, txt, p) for sid, txt, p in items))

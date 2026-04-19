@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from videoflow import state
+from videoflow.cache import CacheKey, CacheStore
 from videoflow.config import Config
 from videoflow.ffmpeg_wrapper import (
     RenderSpec,
@@ -83,12 +84,22 @@ async def run_tts(
     shotlist: ShotList,
     audio_dir: Path,
     provider: TTSProvider,
+    *,
+    max_concurrency: int = 4,
+    cache: Optional[CacheStore] = None,
+    cache_params: Optional[dict[str, str]] = None,
 ) -> dict[str, float]:
     items = [
         (shot.shot_id, shot.narration, audio_dir / f"{shot.shot_id}.mp3")
         for shot in shotlist.shots
     ]
-    durations = await synthesize_all(provider, items)
+    durations = await synthesize_all(
+        provider,
+        items,
+        max_concurrency=max_concurrency,
+        cache=cache,
+        cache_params=cache_params,
+    )
     for shot in shotlist.shots:
         shot.audio_file = audio_dir / f"{shot.shot_id}.mp3"
     return durations
@@ -98,15 +109,39 @@ def render_all_visuals(
     shotlist: ShotList,
     visuals_dir: Path,
     spec: RenderSpec,
+    *,
+    max_concurrency: int = 4,
+    cache: Optional[CacheStore] = None,
 ) -> None:
-    """Rasterise each shot's TitleCardVisual to a PNG.
+    """Rasterise each shot's TitleCardVisual to a PNG — parallel over shots.
 
     PNGs live at ``visuals_dir/<shot_id>.png`` and are attached to the
-    corresponding shot via ``shot.visual_file``.
+    corresponding shot via ``shot.visual_file``. When a :class:`CacheStore`
+    is supplied we look up a (shot_id + visual repr + dimensions) hash
+    before calling Pillow; cache misses populate the cache on completion.
     """
+    import concurrent.futures
+
     visuals_dir.mkdir(parents=True, exist_ok=True)
-    for shot in shotlist.shots:
+
+    def _render_one(shot) -> None:
         out = visuals_dir / f"{shot.shot_id}.png"
+
+        if cache is not None:
+            key = CacheKey.from_visual(
+                shot_id=shot.shot_id,
+                visual_repr=shot.visual.model_dump_json(),
+                width=spec.width,
+                height=spec.height,
+                background_color=spec.background_color,
+            )
+            hit = cache.get(key, kind="visual", ext="png")
+            if hit is not None:
+                import shutil as _sh
+                _sh.copy2(hit, out)
+                shot.visual_file = out
+                return
+
         render_title_card(
             shot,
             out,
@@ -116,20 +151,46 @@ def render_all_visuals(
         )
         shot.visual_file = out
 
+        if cache is not None:
+            key = CacheKey.from_visual(
+                shot_id=shot.shot_id,
+                visual_repr=shot.visual.model_dump_json(),
+                width=spec.width,
+                height=spec.height,
+                background_color=spec.background_color,
+            )
+            cache.put(key, out, kind="visual", ext="png", move=False)
+
+    if max_concurrency <= 1 or len(shotlist.shots) <= 1:
+        for shot in shotlist.shots:
+            _render_one(shot)
+        return
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrency) as pool:
+        list(pool.map(_render_one, shotlist.shots))
+
 
 def render_all_scenes(
     shotlist: ShotList,
     scenes_dir: Path,
     subtitle_path: Path,
     spec: RenderSpec,
+    *,
+    max_concurrency: int = 2,
 ) -> list[Path]:
-    """Render one MP4 per shot using each shot's pre-rendered PNG.
+    """Render one MP4 per shot — parallel subprocess invocations of FFmpeg.
 
     Subtitles are burned in the final concat pass only (to keep ``-c copy``
     viable here); they are silently skipped if libass is unavailable.
+
+    FFmpeg itself is multithreaded, so we cap concurrency modestly to
+    avoid over-subscribing CPU cores.
     """
-    scene_paths: list[Path] = []
-    for shot in shotlist.shots:
+    import concurrent.futures
+
+    scenes_dir.mkdir(parents=True, exist_ok=True)
+
+    def _compose_one(shot) -> Path:
         assert shot.audio_file is not None, "Run TTS before rendering scenes"
         assert shot.visual_file is not None, "Render visuals before rendering scenes"
         out = scenes_dir / f"{shot.shot_id}.mp4"
@@ -141,8 +202,14 @@ def render_all_scenes(
             subtitle_path=None,
             spec=spec,
         )
-        scene_paths.append(out)
-    return scene_paths
+        return out
+
+    if max_concurrency <= 1 or len(shotlist.shots) <= 1:
+        return [_compose_one(shot) for shot in shotlist.shots]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrency) as pool:
+        # Preserve the input order so concat_scenes gets ``S01`` before ``S02``.
+        return list(pool.map(_compose_one, shotlist.shots))
 
 
 def finalize(
@@ -198,6 +265,20 @@ def finalize(
     return final_path
 
 
+def _cache_store_from_config(cfg: Config, workspace_root: Path) -> Optional[CacheStore]:
+    """Materialise a :class:`CacheStore` if enabled in config; else ``None``.
+
+    Relative directories resolve against ``workspace_root`` so every project
+    under the same workspace shares one cache. Absolute paths pass through.
+    """
+    if not cfg.cache.enabled:
+        return None
+    directory = Path(cfg.cache.directory)
+    if not directory.is_absolute():
+        directory = workspace_root / directory
+    return CacheStore(directory)
+
+
 def _write_project_summary(project: Project, output_path: Path, shotlist: ShotList) -> None:
     (project.workspace_dir / "project.json").write_text(
         json.dumps(
@@ -232,6 +313,7 @@ def run_pipeline(
     workspace_root = workspace_root or cfg.runtime.workspace_root
     workspace_root.mkdir(parents=True, exist_ok=True)
 
+    cache = _cache_store_from_config(cfg, workspace_root)
     project = Project.new(workspace_root, input_path=input_path)
     logger.info("Project %s created at %s", project.project_id, project.workspace_dir)
 
@@ -276,8 +358,20 @@ def run_pipeline(
         tts_provider = provider or EdgeTTSProvider(
             voice=cfg.tts.voice, rate=cfg.tts.rate, pitch=cfg.tts.pitch
         )
+        tts_cache_params = (
+            {"voice": cfg.tts.voice, "rate": cfg.tts.rate, "pitch": cfg.tts.pitch}
+            if cache is not None
+            else None
+        )
         durations = asyncio.run(
-            run_tts(shotlist, project.workspace_dir / "audio", tts_provider)
+            run_tts(
+                shotlist,
+                project.workspace_dir / "audio",
+                tts_provider,
+                max_concurrency=cfg.performance.tts_concurrency,
+                cache=cache,
+                cache_params=tts_cache_params,
+            )
         )
         shotlist.retime_from_audio(durations)
         (project.workspace_dir / "shots.json").write_text(
@@ -302,7 +396,13 @@ def run_pipeline(
         # 3. Visuals.
         _emit(db_path, pid, state.STAGE_RENDER_VISUALS, state.STATUS_STARTED)
         spec = _render_spec_from_config(cfg)
-        render_all_visuals(shotlist, project.workspace_dir / "visuals", spec)
+        render_all_visuals(
+            shotlist,
+            project.workspace_dir / "visuals",
+            spec,
+            max_concurrency=cfg.performance.visuals_concurrency,
+            cache=cache,
+        )
         _emit(db_path, pid, state.STAGE_RENDER_VISUALS, state.STATUS_DONE)
 
         # 4. Subtitles.
@@ -323,7 +423,11 @@ def run_pipeline(
         # 5. Scenes.
         _emit(db_path, pid, state.STAGE_RENDER_SCENES, state.STATUS_STARTED)
         scene_paths = render_all_scenes(
-            shotlist, project.workspace_dir / "scenes", subtitle_path, spec
+            shotlist,
+            project.workspace_dir / "scenes",
+            subtitle_path,
+            spec,
+            max_concurrency=cfg.performance.scenes_concurrency,
         )
         _emit(db_path, pid, state.STAGE_RENDER_SCENES, state.STATUS_DONE)
 
@@ -384,6 +488,9 @@ def resume_project(
     if not project_dir.exists():
         raise FileNotFoundError(project_dir)
 
+    # Resume inherits the cache from config just like a fresh run would.
+    cache = _cache_store_from_config(cfg, project_dir.parent)
+
     # Reconstruct a Project handle from the workspace.
     pid = project_dir.name
     if not pid.startswith("proj_"):
@@ -425,7 +532,21 @@ def resume_project(
             tts_provider = provider or EdgeTTSProvider(
                 voice=cfg.tts.voice, rate=cfg.tts.rate, pitch=cfg.tts.pitch
             )
-            durations = asyncio.run(run_tts(shotlist, audio_dir, tts_provider))
+            tts_cache_params = (
+                {"voice": cfg.tts.voice, "rate": cfg.tts.rate, "pitch": cfg.tts.pitch}
+                if cache is not None
+                else None
+            )
+            durations = asyncio.run(
+                run_tts(
+                    shotlist,
+                    audio_dir,
+                    tts_provider,
+                    max_concurrency=cfg.performance.tts_concurrency,
+                    cache=cache,
+                    cache_params=tts_cache_params,
+                )
+            )
             shotlist.retime_from_audio(durations)
             shots_json.write_text(shotlist.model_dump_json(indent=2), encoding="utf-8")
             _emit(db_path, pid, state.STAGE_TTS, state.STATUS_DONE)
@@ -435,7 +556,13 @@ def resume_project(
             _emit(
                 db_path, pid, state.STAGE_RENDER_VISUALS, state.STATUS_STARTED, {"resume": True}
             )
-            render_all_visuals(shotlist, visuals_dir, spec)
+            render_all_visuals(
+                shotlist,
+                visuals_dir,
+                spec,
+                max_concurrency=cfg.performance.visuals_concurrency,
+                cache=cache,
+            )
             _emit(db_path, pid, state.STAGE_RENDER_VISUALS, state.STATUS_DONE)
 
         # Subtitles.
@@ -470,7 +597,13 @@ def resume_project(
                     shot.audio_file = audio_dir / f"{shot.shot_id}.mp3"
                 if shot.visual_file is None:
                     shot.visual_file = visuals_dir / f"{shot.shot_id}.png"
-            render_all_scenes(shotlist, project_dir / "scenes", subtitle_path, spec)
+            render_all_scenes(
+                shotlist,
+                project_dir / "scenes",
+                subtitle_path,
+                spec,
+                max_concurrency=cfg.performance.scenes_concurrency,
+            )
             _emit(db_path, pid, state.STAGE_RENDER_SCENES, state.STATUS_DONE)
 
         # Finalize.

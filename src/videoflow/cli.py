@@ -442,15 +442,53 @@ def trace(
     project_id: str = typer.Argument(...),
     stage: Optional[str] = typer.Option(None, "--stage", "-s", help="Filter by stage name."),
     tail: Optional[int] = typer.Option(None, "--tail", "-n", help="Only show the last N events."),
+    timings: bool = typer.Option(
+        False,
+        "--timings",
+        "-t",
+        help="Show per-stage wall times instead of raw events.",
+    ),
+    summary: bool = typer.Option(
+        False,
+        "--summary",
+        help="Print aggregate JSON (total events, failures, wall time, stage timings).",
+    ),
     config_path: Optional[Path] = typer.Option(Path("config.toml"), "--config", "-c"),
     db: Optional[Path] = typer.Option(None, "--db"),
 ) -> None:
-    """Print the event log for one project."""
+    """Print the event log for one project.
+
+    By default shows the raw event stream. ``--timings`` pivots to a
+    per-stage table of durations; ``--summary`` dumps a JSON blob that's
+    easier for dashboards to consume.
+    """
     cfg = load_config(config_path if config_path and config_path.exists() else None)
     db_path = db or _resolve_db_path(cfg)
     if not db_path.exists():
         console.print(f"[yellow]![/yellow] No DB at {db_path}")
         raise typer.Exit(code=0)
+
+    if summary:
+        data = state.event_summary(db_path, project_id)
+        console.print_json(data=data)
+        return
+
+    if timings:
+        rows = state.stage_timings(db_path, project_id)
+        if not rows:
+            console.print("(no events)")
+            return
+        table = Table(title=f"Stage timings · {project_id}")
+        table.add_column("stage")
+        table.add_column("status")
+        table.add_column("started_at")
+        table.add_column("duration_s", justify="right")
+        for r in rows:
+            dur = f"{r.duration_s:.2f}" if r.duration_s is not None else "-"
+            started = r.started_at or "-"
+            table.add_row(r.stage, r.status, started, dur)
+        console.print(table)
+        return
 
     events = state.list_events(db_path, project_id, stage=stage, tail=tail)
     if not events:
