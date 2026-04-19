@@ -1,0 +1,31 @@
+# Videoflow Demo Configuration
+# See README for full reference.
+
+[runtime]
+workspace_root = "./workspace"
+log_level = "INFO"
+
+[rendering]
+width = 1080
+height = 1920
+fps = 30
+background_color = "#0A1929"
+
+[tts]
+provider = "edge"
+voice = "zh-CN-YunxiNeural"
+rate = "+0%"
+pitch = "+0Hz"
+
+[ffmpeg]
+preset = "medium"
+crf = 23
+audio_bitrate = "192k"
+
+[subtitles]
+font_name = "PingFang SC"
+font_size = 56
+primary_color = "&H00FFFFFF"        # White
+outline_color = "&H00000000"        # Black
+alignment = 2                         # Bottom center
+margin_v = 200

@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Videoflow runtime
+workspace/*/
+!workspace/.gitkeep
+*.mp3
+*.wav
+*.mp4
+*.srt
+*.ass
+*.png
+*.jpg
+cache/
+
+# Keep examples
+!examples/**/*.md
+
+# Logs
+*.log
