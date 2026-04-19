@@ -21,6 +21,7 @@
 - [x] ✅ Markdown → ShotList Parser(规则切分)
 - [x] ✅ edge-tts 异步封装 + 并发生成
 - [x] ✅ ASS 字幕生成(基于实际 MP3 时长回写 start/end)
+- [x] ✅ Pillow 标题卡渲染器(CJK 字体自动探测,无需 libass)
 - [x] ✅ 纯 FFmpeg 命令行合成(compose_scene → concat → finalize)
 - [x] ✅ TOML 配置加载
 - [x] ✅ `video-agent` CLI(generate / parse / tts / render)

@@ -32,6 +32,12 @@ def test_end_to_end(tmp_path):
     assert (project.workspace_dir / "subtitles" / "final.ass").exists()
     for shot in project.shotlist.shots:
         assert shot.audio_file and shot.audio_file.exists()
+        assert shot.visual_file and shot.visual_file.exists()
+        # Visual PNG should be the full target resolution.
+        from PIL import Image
+
+        with Image.open(shot.visual_file) as im:
+            assert im.size == (1080, 1920)
 
     # Duration sanity: sum of shot durations ~= project.shotlist.actual_duration.
     assert project.shotlist.actual_duration and project.shotlist.actual_duration > 5.0

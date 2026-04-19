@@ -22,6 +22,7 @@ from videoflow.ffmpeg_wrapper import (
 )
 from videoflow.models import Project, ShotList
 from videoflow.parser import parse_file
+from videoflow.renderer import render_title_card
 from videoflow.subtitles import AssStyle, write_ass
 from videoflow.tts import EdgeTTSProvider, TTSProvider, synthesize_all
 
@@ -68,25 +69,51 @@ async def run_tts(
     return durations
 
 
+def render_all_visuals(
+    shotlist: ShotList,
+    visuals_dir: Path,
+    spec: RenderSpec,
+) -> None:
+    """Rasterise each shot's TitleCardVisual to a PNG.
+
+    PNGs live at ``visuals_dir/<shot_id>.png`` and are attached to the
+    corresponding shot via ``shot.visual_file``.
+    """
+    visuals_dir.mkdir(parents=True, exist_ok=True)
+    for shot in shotlist.shots:
+        out = visuals_dir / f"{shot.shot_id}.png"
+        render_title_card(
+            shot,
+            out,
+            width=spec.width,
+            height=spec.height,
+            background_color=spec.background_color.replace("0x", "#"),
+        )
+        shot.visual_file = out
+
+
 def render_all_scenes(
     shotlist: ShotList,
     scenes_dir: Path,
     subtitle_path: Path,
     spec: RenderSpec,
 ) -> list[Path]:
-    """Render one MP4 per shot. Subtitles are burned once per-shot so concat
-    can use ``-c copy``. Each shot's subtitle offset matches its start time,
-    so a single ASS file works across all shots.
+    """Render one MP4 per shot using each shot's pre-rendered PNG.
+
+    Subtitles are burned in the final concat pass only (to keep ``-c copy``
+    viable here); they are silently skipped if libass is unavailable.
     """
     scene_paths: list[Path] = []
     for shot in shotlist.shots:
         assert shot.audio_file is not None, "Run TTS before rendering scenes"
+        assert shot.visual_file is not None, "Render visuals before rendering scenes"
         out = scenes_dir / f"{shot.shot_id}.mp4"
         compose_scene(
             audio_path=shot.audio_file,
             output_path=out,
             duration=shot.duration,
-            subtitle_path=None,  # Subtitles burned in the final concat pass.
+            visual_path=shot.visual_file,
+            subtitle_path=None,
             spec=spec,
         )
         scene_paths.append(out)
@@ -183,8 +210,9 @@ def run_pipeline(
     subtitle_path = project.workspace_dir / "subtitles" / "final.ass"
     write_ass(shotlist, subtitle_path, _ass_style_from_config(cfg))
 
-    # 4. Render scenes + finalize.
+    # 4. Render visuals (title card PNGs) + scenes + finalize.
     spec = _render_spec_from_config(cfg)
+    render_all_visuals(shotlist, project.workspace_dir / "visuals", spec)
     scene_paths = render_all_scenes(
         shotlist, project.workspace_dir / "scenes", subtitle_path, spec
     )

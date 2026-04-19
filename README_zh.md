@@ -121,10 +121,13 @@ examples/stock-myths/input.md
    tts.py     ── 并发调用 edge-tts,每条旁白生成 <shot_id>.mp3
         │
         ▼
+   renderer.py ── Pillow 把每个 shot 渲染成 1080×1920 标题卡 PNG(CJK 字体)
+        │
+        ▼
    subtitles.py ── 根据实际 MP3 时长,输出 ASS 文件(回写 shot.start/end)
         │
         ▼
-   ffmpeg_wrapper.py ── compose_scene → concat → finalize,产出 1080x1920 MP4
+   ffmpeg_wrapper.py ── compose_scene(PNG+MP3) → concat → finalize,产出 1080×1920 MP4
 ```
 
 输出目录结构:

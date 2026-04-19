@@ -18,6 +18,7 @@ from videoflow.parser import parse_file
 from videoflow.pipeline import (
     finalize,
     render_all_scenes,
+    render_all_visuals,
     run_pipeline,
     run_tts,
     _ass_style_from_config,
@@ -151,6 +152,7 @@ def render(
     write_ass(shotlist, subtitle_path, _ass_style_from_config(cfg))
 
     spec = _render_spec_from_config(cfg)
+    render_all_visuals(shotlist, project_dir / "visuals", spec)
     scene_paths = render_all_scenes(shotlist, project_dir / "scenes", subtitle_path, spec)
     output.parent.mkdir(parents=True, exist_ok=True)
     finalize(scene_paths, subtitle_path, output, spec)

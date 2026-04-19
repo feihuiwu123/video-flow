@@ -121,10 +121,13 @@ examples/stock-myths/input.md
    tts.py          → concurrent edge-tts → <shot_id>.mp3
         │
         ▼
+   renderer.py     → Pillow rasterises each shot to a 1080×1920 PNG (CJK font)
+        │
+        ▼
    subtitles.py    → real MP3 duration → ASS file (writes back shot.start/end)
         │
         ▼
-   ffmpeg_wrapper  → compose_scene → concat → finalize → 1080×1920 MP4
+   ffmpeg_wrapper  → compose_scene (PNG+MP3) → concat → finalize → 1080×1920 MP4
 ```
 
 Output layout:

@@ -52,6 +52,32 @@ class TestComposeScene:
         # Faststart for streaming.
         assert "+faststart" in cmd
 
+    def test_visual_path_replaces_lavfi(self, tmp_path):
+        audio = tmp_path / "a.mp3"
+        audio.write_bytes(b"\x00")
+        visual = tmp_path / "frame.png"
+        visual.write_bytes(b"\x00")
+        out = tmp_path / "o.mp4"
+
+        captured: dict = {}
+
+        with patch("videoflow.ffmpeg_wrapper._ensure_ffmpeg"), patch(
+            "videoflow.ffmpeg_wrapper._run", side_effect=lambda c: captured.setdefault("cmd", c)
+        ):
+            compose_scene(audio, out, duration=4.0, visual_path=visual)
+
+        cmd = captured["cmd"]
+        # No lavfi color source.
+        assert not any(isinstance(a, str) and a.startswith("color=") for a in cmd)
+        # Loop + duration + png input.
+        assert "-loop" in cmd
+        assert str(visual) in cmd
+        # Scale/pad filter applied for aspect safety.
+        vf_idx = cmd.index("-vf")
+        vf = cmd[vf_idx + 1]
+        assert "scale=" in vf
+        assert "pad=" in vf
+
     def test_custom_spec_propagates(self, tmp_path):
         audio = tmp_path / "a.mp3"
         audio.write_bytes(b"\x00")
