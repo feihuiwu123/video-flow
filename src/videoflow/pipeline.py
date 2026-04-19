@@ -30,7 +30,7 @@ from videoflow.ffmpeg_wrapper import (
 from videoflow.models import Project, ShotList
 from videoflow.parser import parse_file
 from videoflow.renderer import render_title_card
-from videoflow.subtitles import AssStyle, write_ass
+from videoflow.subtitles import AssStyle, write_ass, write_ass_with_align
 from videoflow.tts import EdgeTTSProvider, TTSProvider, synthesize_all
 
 logger = logging.getLogger(__name__)
@@ -308,7 +308,16 @@ def run_pipeline(
         # 4. Subtitles.
         _emit(db_path, pid, state.STAGE_SUBTITLES, state.STATUS_STARTED)
         subtitle_path = project.workspace_dir / "subtitles" / "final.ass"
-        write_ass(shotlist, subtitle_path, _ass_style_from_config(cfg))
+        if cfg.align.provider == "mcp":
+            logger.info("Using align MCP for word-level subtitles")
+            write_ass_with_align(
+                shotlist,
+                subtitle_path,
+                _ass_style_from_config(cfg),
+                language=cfg.align.language,
+            )
+        else:
+            write_ass(shotlist, subtitle_path, _ass_style_from_config(cfg))
         _emit(db_path, pid, state.STAGE_SUBTITLES, state.STATUS_DONE)
 
         # 5. Scenes.
@@ -434,7 +443,16 @@ def resume_project(
             _emit(
                 db_path, pid, state.STAGE_SUBTITLES, state.STATUS_STARTED, {"resume": True}
             )
-            write_ass(shotlist, subtitle_path, _ass_style_from_config(cfg))
+            if cfg.align.provider == "mcp":
+                logger.info("Using align MCP for word-level subtitles")
+                write_ass_with_align(
+                    shotlist,
+                    subtitle_path,
+                    _ass_style_from_config(cfg),
+                    language=cfg.align.language,
+                )
+            else:
+                write_ass(shotlist, subtitle_path, _ass_style_from_config(cfg))
             _emit(db_path, pid, state.STAGE_SUBTITLES, state.STATUS_DONE)
 
         # Scenes.

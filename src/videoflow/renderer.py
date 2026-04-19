@@ -8,9 +8,12 @@ libass / libfreetype / libfontconfig, which means the ``subtitles``,
 actual on-screen content — heading + narration — we rasterise a PNG in
 Python with Pillow and feed that PNG to FFmpeg as the background frame.
 
-Later renderers (Mermaid / Remotion / Playwright — see PRD §6) will
-produce their own visuals; this module handles the demo's TitleCardVisual
-only.
+Later renderers (Mermaid / Remotion / Playwright — see PRD §6) produce
+their own visuals; this module handles the demo's TitleCardVisual only.
+Ken Burns motion for ImageVisual lives in the Remotion compositions
+(``mcp_servers/remotion/src/compositions/Image.tsx``); Mermaid/SVG
+rendering lives in ``videoflow.mermaid``. This keeps the Pillow path
+strictly about static on-screen text — no moving parts.
 """
 
 from __future__ import annotations
@@ -256,3 +259,4 @@ def render_title_card(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path, format="PNG", optimize=True)
     return output_path
+

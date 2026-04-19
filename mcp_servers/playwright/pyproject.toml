@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videoflow-playwright"
+version = "0.1.0.dev0"
+description = "MCP Server · screen capture to video via Playwright + ffmpeg."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Videoflow" }]
+keywords = ["mcp", "playwright", "chromium", "screen-capture", "video", "videoflow"]
+
+dependencies = [
+    "mcp>=1.0",
+    "playwright>=1.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+videoflow-playwright = "videoflow_playwright.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/videoflow/videoflow"
+Repository = "https://github.com/videoflow/videoflow"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "pw_integration: spawns browser and records video (slow; needs playwright install)",
+]

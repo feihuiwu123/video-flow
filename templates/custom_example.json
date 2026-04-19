@@ -1,0 +1,16 @@
+{
+  "name": "product_showcase",
+  "display_name": "产品展示",
+  "description": "用于产品功能介绍、使用演示类视频",
+  "background_color": "#0D47A1",
+  "text_color": "#FFFFFF",
+  "highlight_color": "#00E5FF",
+  "font_family": "Noto Sans SC",
+  "tone": "enthusiastic",
+  "pace": "fast",
+  "default_duration_per_shot": 5.0,
+  "min_shots": 6,
+  "max_shots": 15,
+  "example_topic": "新品发布",
+  "system_prompt": "你是一个产品展示视频脚本策划助手，擅长突出产品特点和优势。"
+}

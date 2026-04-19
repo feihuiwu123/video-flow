@@ -28,6 +28,17 @@ dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",
 ]
+# Word-level subtitle alignment via faster-whisper (M3.2)
+# Install separately: cd mcp_servers/align && pip install -e .
+align = []
+# Screen capture via Playwright (M3.3)
+# Install separately: cd mcp_servers/playwright && pip install -e .
+playwright = []
+# Animated visuals via Remotion (M3.4a) - Node.js required
+# Install: cd mcp_servers/remotion && npm install && npm run bundle
+remotion = []
+# All optional dependencies (Python MCPs only; see mcp_servers/*/README for Node deps)
+all = []
 
 [project.scripts]
 video-agent = "videoflow.cli:app"

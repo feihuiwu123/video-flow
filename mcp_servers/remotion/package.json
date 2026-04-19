@@ -1,0 +1,47 @@
+{
+  "name": "videoflow-remotion",
+  "version": "0.1.0-dev.0",
+  "description": "MCP Server · animated video rendering via Remotion (React + TypeScript)",
+  "main": "dist/server.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc && node dist/server.js",
+    "bundle": "remotion bundle src/server.tsx --out-dir dist/bundle",
+    "render:title": "remotion render TitleCard --out-dir out",
+    "render:chart": "remotion render Chart --out-dir out",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mcp-sdk/server": "^0.1.0",
+    "@remotion/cli": "^4.0.0",
+    "@remotion/bundler": "^4.0.0",
+    "@remotion/renderer": "^4.0.0",
+    "@remotion/player": "^4.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "remotion": "^4.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "remotion",
+    "video",
+    "animation",
+    "react",
+    "videoflow"
+  ],
+  "author": "Videoflow",
+  "license": "MIT"
+}

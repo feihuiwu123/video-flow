@@ -29,3 +29,13 @@ primary_color = "&H00FFFFFF"        # White
 outline_color = "&H00000000"        # Black
 alignment = 2                         # Bottom center
 margin_v = 200
+
+# Word-level subtitle alignment via faster-whisper (M3.2)
+# Install: pip install -e ./mcp_servers/align
+# Set provider = "mcp" to enable word-level karaoke timing
+[align]
+provider = "none"                  # "none" or "mcp"
+mcp_transport = "stdio"            # "stdio" (spawn subprocess) or "sse" (localhost:8765)
+model_size = "base"                 # faster-whisper model: tiny, base, small, medium, large-v2
+language = "auto"                   # ISO code (e.g., "zh", "en") or "auto"
+word_timestamps = true             # Emit karaoke tags per word

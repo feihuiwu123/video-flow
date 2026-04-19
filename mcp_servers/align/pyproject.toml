@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videoflow-align"
+version = "0.1.0.dev0"
+description = "MCP Server · word-level subtitle alignment via faster-whisper (base)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Videoflow" }]
+keywords = ["mcp", "whisper", "faster-whisper", "subtitles", "ass", "videoflow"]
+
+# faster-whisper base model (~150MB) works on CPU; ctranslate2 pulls its
+# own wheels. ``mcp`` is the official Python SDK from modelcontextprotocol.
+dependencies = [
+    "mcp>=1.0",
+    "faster-whisper>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+videoflow-align = "videoflow_align.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "mcp_integration: spawns the MCP server over stdio (slow; needs faster-whisper install)",
+]

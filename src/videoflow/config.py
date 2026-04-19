@@ -32,6 +32,28 @@ class RenderingConfig:
 
 
 @dataclass
+class LLMConfig:
+    """Configuration for LLM parsing (M2)."""
+
+    # Provider: "none" (rule-based), "deepseek", "openai", "anthropic"
+    provider: str = "none"
+
+    # Model for each provider
+    deepseek_model: str = "deepseek-chat"
+    openai_model: str = "gpt-4o"
+    anthropic_model: str = "claude-sonnet-4-20250514"
+
+    # Temperature for generation (0.0-1.0)
+    temperature: float = 0.7
+
+    # Max tokens per request
+    max_tokens: int = 4096
+
+    # Template name for prompt customization (optional)
+    template: str | None = None
+
+
+@dataclass
 class TTSConfig:
     provider: str = "edge"
     voice: str = "zh-CN-YunxiNeural"
@@ -57,12 +79,34 @@ class SubtitleConfig:
 
 
 @dataclass
+class AlignConfig:
+    """Configuration for word-level subtitle alignment."""
+
+    # Provider: "none" (per-shot), "mcp" (videoflow-align MCP server)
+    provider: str = "none"
+
+    # MCP server transport: "stdio" (default) or "sse" (localhost:8765)
+    mcp_transport: str = "stdio"
+
+    # faster-whisper model size (if using MCP)
+    model_size: str = "base"
+
+    # Language code or "auto"
+    language: str = "auto"
+
+    # Whether to emit word-level karaoke tags
+    word_timestamps: bool = True
+
+
+@dataclass
 class Config:
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     rendering: RenderingConfig = field(default_factory=RenderingConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     ffmpeg: FFmpegConfig = field(default_factory=FFmpegConfig)
     subtitles: SubtitleConfig = field(default_factory=SubtitleConfig)
+    align: AlignConfig = field(default_factory=AlignConfig)
 
 
 def load_config(path: Path | str | None = None) -> Config:
@@ -92,6 +136,17 @@ def load_config(path: Path | str | None = None) -> Config:
             fps=r.get("fps", cfg.rendering.fps),
             background_color=r.get("background_color", cfg.rendering.background_color),
         )
+    if "llm" in data:
+        l = data["llm"]
+        cfg.llm = LLMConfig(
+            provider=l.get("provider", cfg.llm.provider),
+            deepseek_model=l.get("deepseek_model", cfg.llm.deepseek_model),
+            openai_model=l.get("openai_model", cfg.llm.openai_model),
+            anthropic_model=l.get("anthropic_model", cfg.llm.anthropic_model),
+            temperature=l.get("temperature", cfg.llm.temperature),
+            max_tokens=l.get("max_tokens", cfg.llm.max_tokens),
+            template=l.get("template", cfg.llm.template),
+        )
     if "tts" in data:
         t = data["tts"]
         cfg.tts = TTSConfig(
@@ -116,5 +171,14 @@ def load_config(path: Path | str | None = None) -> Config:
             outline_color=s.get("outline_color", cfg.subtitles.outline_color),
             alignment=s.get("alignment", cfg.subtitles.alignment),
             margin_v=s.get("margin_v", cfg.subtitles.margin_v),
+        )
+    if "align" in data:
+        a = data["align"]
+        cfg.align = AlignConfig(
+            provider=a.get("provider", cfg.align.provider),
+            mcp_transport=a.get("mcp_transport", cfg.align.mcp_transport),
+            model_size=a.get("model_size", cfg.align.model_size),
+            language=a.get("language", cfg.align.language),
+            word_timestamps=a.get("word_timestamps", cfg.align.word_timestamps),
         )
     return cfg
