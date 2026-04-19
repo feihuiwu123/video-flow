@@ -1,8 +1,8 @@
 """Pydantic v2 data models for the Videoflow demo.
 
-Only the subset of the PRD's §4 schema that the minimum demo needs.
-Other visual types (ChartVisual / DiagramVisual / StockFootageVisual …) are
-kept as TODOs in ``TODO_LIST.md`` — this demo uses TitleCardVisual only.
+Supports multiple visual types: TitleCardVisual, ChartVisual, DiagramVisual,
+ImageVisual. Other visual types (StockFootageVisual, ScreenCaptureVisual) are
+tracked in TODO_LIST.md for future implementation.
 """
 
 from __future__ import annotations
@@ -10,25 +10,70 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Renderer(str, Enum):
-    STATIC = "static"  # Solid background colour — the only renderer the demo ships.
-    MERMAID = "mermaid"
-    REMOTION = "remotion"
-    PLAYWRIGHT = "playwright"
+    STATIC = "static"  # Pillow PNG rendering — the default renderer for demo.
+    MERMAID = "mermaid"  # Mermaid-CLI → SVG/PNG for diagrams.
+    REMOTION = "remotion"  # Remotion → animated MP4 (requires Node.js).
+    PLAYWRIGHT = "playwright"  # Playwright → browser recording.
 
 
-class TitleCardVisual(BaseModel):
+class VisualSpec(BaseModel):
+    """Base class for all visual types — discriminated by `type` field."""
+    pass
+
+
+class TitleCardVisual(VisualSpec):
     """A simple title card: solid background + optional headline text."""
 
     type: Literal["title_card"] = "title_card"
     text: str = Field(min_length=1, description="Headline text overlaid on the card.")
     background: Literal["dark", "light"] = "dark"
     highlight_keywords: list[str] = Field(default_factory=list)
+
+
+class ChartVisual(VisualSpec):
+    """A data chart (bar, line, pie, scatter) rendered as a static image."""
+
+    type: Literal["chart"] = "chart"
+    chart_type: Literal["bar", "line", "pie", "scatter"] = "bar"
+    data: dict = Field(
+        default_factory=dict,
+        description="Chart data with 'labels' (list[str]) and 'values' (list[float])"
+    )
+    title: Optional[str] = None
+    color_scheme: str = "default"  # "default" | "finance" | "warm" | "cool"
+    show_legend: bool = True
+
+
+class DiagramVisual(VisualSpec):
+    """A diagram (flowchart, graph, sequence) rendered from Mermaid DSL."""
+
+    type: Literal["diagram"] = "diagram"
+    mermaid_code: str = Field(
+        min_length=1,
+        description="Mermaid diagram syntax (graph, flowchart, sequenceDiagram, etc.)"
+    )
+    title: Optional[str] = None
+    background: Literal["dark", "light", "transparent"] = "dark"
+
+
+class ImageVisual(VisualSpec):
+    """A static image with optional Ken Burns effect."""
+
+    type: Literal["image"] = "image"
+    path: str = Field(min_length=1, description="Image file path (local or URL)")
+    caption: Optional[str] = None
+    ken_burns: bool = False  # Ken Burns is handled by Remotion; static renders skip it.
+    background: Literal["dark", "light", "auto"] = "auto"
+
+
+# Union type for all visual specs — used in Shot model
+AnyVisual = Union[TitleCardVisual, ChartVisual, DiagramVisual, ImageVisual]
 
 
 class Shot(BaseModel):
@@ -38,7 +83,7 @@ class Shot(BaseModel):
     start: float = Field(ge=0.0, description="Seconds since video start.")
     end: float = Field(ge=0.0, description="Seconds since video start.")
     narration: str = Field(min_length=1)
-    visual: TitleCardVisual
+    visual: AnyVisual  # Union of TitleCardVisual, ChartVisual, DiagramVisual, ImageVisual
     renderer: Renderer = Renderer.STATIC
 
     # Runtime-populated paths (empty at parse time, filled by TTS / renderer).

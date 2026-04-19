@@ -30,7 +30,7 @@ from videoflow.ffmpeg_wrapper import (
 )
 from videoflow.models import Project, ShotList
 from videoflow.parser import parse_file
-from videoflow.renderer import render_title_card
+from videoflow.renderer import render_visual
 from videoflow.subtitles import AssStyle, write_ass, write_ass_with_align
 from videoflow.tts import EdgeTTSProvider, TTSProvider, synthesize_all
 
@@ -142,7 +142,7 @@ def render_all_visuals(
                 shot.visual_file = out
                 return
 
-        render_title_card(
+        render_visual(
             shot,
             out,
             width=spec.width,
@@ -302,12 +302,17 @@ def run_pipeline(
     provider: Optional[TTSProvider] = None,
     workspace_root: Optional[Path] = None,
     db_path: Optional[Path] = None,
+    pre_parsed_shotlist: Optional[ShotList] = None,
 ) -> Project:
     """Blocking end-to-end run. Returns the finished Project record.
 
     When ``db_path`` is given, the project is indexed into SQLite and each
     stage emits ``started`` / ``done`` / ``failed`` events. Pass ``None``
     (the default) to run without persistence — useful for tests.
+
+    Args:
+        pre_parsed_shotlist: If provided, skip parsing stage and use this shotlist.
+            Useful when CLI has already parsed with LLM and wants to confirm before pipeline.
     """
     cfg = config or Config()
     workspace_root = workspace_root or cfg.runtime.workspace_root
@@ -331,27 +336,46 @@ def run_pipeline(
     pid = project.project_id
 
     try:
-        # 1. Parse.
-        _emit(db_path, pid, state.STAGE_PARSE, state.STATUS_STARTED)
-        shotlist = parse_file(input_path)
-        (project.workspace_dir / "shots_draft.json").write_text(
-            shotlist.model_dump_json(indent=2), encoding="utf-8"
-        )
-        _emit(
-            db_path,
-            pid,
-            state.STAGE_PARSE,
-            state.STATUS_DONE,
-            {"num_shots": len(shotlist.shots)},
-        )
-        if db_path is not None:
-            state.upsert_project(
-                db_path,
-                project_id=pid,
-                workspace_dir=project.workspace_dir,
-                status="parsed",
-                num_shots=len(shotlist.shots),
+        # 1. Parse (skip if pre-parsed shotlist provided from CLI)
+        if pre_parsed_shotlist is not None:
+            shotlist = pre_parsed_shotlist
+            # Write both draft and final since we're skipping parse stage
+            (project.workspace_dir / "shots_draft.json").write_text(
+                shotlist.model_dump_json(indent=2), encoding="utf-8"
             )
+            (project.workspace_dir / "shots.json").write_text(
+                shotlist.model_dump_json(indent=2), encoding="utf-8"
+            )
+            logger.info("Using pre-parsed shotlist: %d shots", len(shotlist.shots))
+            if db_path is not None:
+                state.upsert_project(
+                    db_path,
+                    project_id=pid,
+                    workspace_dir=project.workspace_dir,
+                    status="parsed",
+                    num_shots=len(shotlist.shots),
+                )
+        else:
+            _emit(db_path, pid, state.STAGE_PARSE, state.STATUS_STARTED)
+            shotlist = parse_file(input_path)
+            (project.workspace_dir / "shots_draft.json").write_text(
+                shotlist.model_dump_json(indent=2), encoding="utf-8"
+            )
+            _emit(
+                db_path,
+                pid,
+                state.STAGE_PARSE,
+                state.STATUS_DONE,
+                {"num_shots": len(shotlist.shots)},
+            )
+            if db_path is not None:
+                state.upsert_project(
+                    db_path,
+                    project_id=pid,
+                    workspace_dir=project.workspace_dir,
+                    status="parsed",
+                    num_shots=len(shotlist.shots),
+                )
 
         # 2. TTS (populates audio_file + real durations).
         _emit(db_path, pid, state.STAGE_TTS, state.STATUS_STARTED)

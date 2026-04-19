@@ -1,221 +1,224 @@
 # Videoflow
 
-> **Text in · video out · minimal human touch · fully traceable**
+> Text in · Video out · AI-powered short video pipeline
 
-[English](./README_en.md) · [中文](./README_zh.md) · [Full PRD](./docs/PRD_zh.md) · [Roadmap](./TODO_LIST.md)
-
----
-
-## 🏗️ System Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Videoflow Pipeline                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-        ┌───────────────────────────┼───────────────────────────┐
-        │                           │                           │
-        ▼                           ▼                           ▼
-┌───────────────┐         ┌───────────────┐           ┌───────────────┐
-│    Markdown   │         │      LLM      │           │   Templates   │
-│    Script     │         │   Provider    │           │   System      │
-│  (input.md)   │         │ (DeepSeek/   │           │  (explainer/ │
-│               │         │  OpenAI/     │           │   news/etc.) │
-└───────────────┘         │  Anthropic)  │           └───────────────┘
-        │                  └───────────────┘                   │
-        │                           │                           │
-        └───────────┬───────────────┘                           │
-                    ▼                                           │
-           ┌────────────────┐                                    │
-           │     Parser     │◄───────────────────────────────────┘
-           │  (ShotList)   │
-           └───────┬────────┘
-                   │
-       ┌───────────┼───────────┐
-       │           │           │
-       ▼           ▼           ▼
-┌──────────┐ ┌──────────┐ ┌──────────┐
-│    TTS   │ │ Subtitle │ │ Renderer  │
-│ (edge-   │ │  (ASS)   │ │ (Pillow/ │
-│  tts)    │ │          │ │ KenBurns)│
-└─────┬────┘ └────┬─────┘ └────┬────┘
-      │           │           │
-      └───────────┴───────────┘
-                  │
-                  ▼
-         ┌────────────────┐
-         │     FFmpeg     │
-         │  (composer)    │
-         └───────┬────────┘
-                 │
-                 ▼
-         ┌────────────────┐
-         │   Final MP4    │
-         │ (1080×1920)   │
-         └────────────────┘
-```
-
-### Core Components
-
-| Component | Description | Key Files |
-|-----------|-------------|-----------|
-| **CLI** | `video-agent` command | `src/videoflow/cli.py` |
-| **Parser** | Markdown → ShotList | `src/videoflow/parser.py` |
-| **LLM Providers** | DeepSeek/OpenAI/Anthropic | `src/videoflow/providers/` |
-| **TTS** | Edge TTS synthesis | `src/videoflow/tts.py` |
-| **Renderer** | Pillow + Ken Burns | `src/videoflow/renderer.py` |
-| **Subtitles** | ASS generation | `src/videoflow/subtitles.py` |
-| **Pipeline** | Orchestration | `src/videoflow/pipeline.py` |
-| **State** | SQLite tracking | `src/videoflow/state.py` |
-
-### MCP Servers (Optional)
-
-| Server | Purpose | Location |
-|--------|---------|----------|
-| `videoflow-align` | Word-level subtitle alignment (faster-whisper) | `mcp_servers/align/` |
-| `videoflow-playwright` | Screen capture to MP4 | `mcp_servers/playwright/` |
-| `videoflow-remotion` | Animated visuals (6 types) | `mcp_servers/remotion/` |
+[中文](./README_zh.md) · [Full PRD](./docs/PRD_zh.md) · [Roadmap](./TODO_LIST.md)
 
 ---
 
-## 🚀 Quick Start
-
-### Prerequisites
-
-- **Python** 3.11+
-- **FFmpeg** 6.0+
-- **Network** (for TTS and LLM)
+## 5-Minute Quickstart
 
 ```bash
-# Verify prerequisites
-python --version   # ≥ 3.11
-ffmpeg -version   # ≥ 6.0
-```
-
-### Installation
-
-```bash
-# 1. Clone the repository
-git clone <repo-url> video-flow && cd video-flow
-
-# 2. Create virtual environment
+# 1. Create virtual environment
 python -m venv .venv && source .venv/bin/activate
 
-# 3. Install dependencies
+# 2. Install dependencies
 pip install -e ".[dev]"
 
-# 4. Copy environment template (optional - already has demo keys)
-cp .env.example .env
-```
+# 3. Generate video with AI shot planning
+python -m videoflow.cli generate examples/stock-myths/input.md --plan --output workspace/demo.mp4
 
-### First Video (5 minutes)
-
-```bash
-# Run the demo pipeline end-to-end
-video-agent generate examples/stock-myths/input.md --output workspace/demo.mp4
-
-# Open the result
+# 4. Open result
 open workspace/demo.mp4
 ```
 
 ---
 
-## 📖 Usage Guide
-
-### End-to-End Pipeline
+## Core Commands
 
 ```bash
-# One command to rule them all
-video-agent generate <input.md> --output <output.mp4>
-```
+# Plan: Generate professional shot plan using LLM
+python -m videoflow.cli plan "your topic or content" -o plan.json
 
-### Step-by-Step Pipeline
+# Generate: Create video from Markdown or plan file
+python -m videoflow.cli generate input.md --output out.mp4           # From Markdown
+python -m videoflow.cli generate input.md --plan --output out.mp4   # With AI planning
+python -m videoflow.cli generate plan.json --output out.mp4          # From plan file
 
-```bash
-# Step 1: Parse Markdown → ShotList JSON
-video-agent parse examples/stock-myths/input.md --output shots.json
+# Parse: Convert Markdown to shot structure
+python -m videoflow.cli parse input.md --output shots.json
 
-# Step 2: Generate TTS audio
-video-agent tts shots.json --output audio/
-
-# Step 3: Render visuals and compose video
-video-agent render workspace/proj_xxx/ --output final.mp4
-```
-
-### LLM-Powered Parsing (Recommended)
-
-```bash
-# Set API key (already in .env)
-export DEEPSEEK_API_KEY=sk-your-key
-
-# Parse with DeepSeek (default)
-video-agent llm input.md --output shots.json
-
-# Parse with template
-video-agent llm input.md --template explainer --output shots.json
-```
-
-### Project Management
-
-```bash
-# Initialize state database
-video-agent init-db
-
-# List projects
-video-agent list
-
-# Check project status
-video-agent status <project_id>
-
-# Resume interrupted project
-video-agent resume <project_id>
-
-# View event log
-video-agent trace <project_id> --timings
-
-# System diagnostics
-video-agent doctor
-```
-
-### Templates
-
-```bash
-# List available templates
-video-agent template --list
-
-# Show template prompt
-video-agent template --prompt explainer
+# Other commands
+python -m videoflow.cli list                          # List projects
+python -m videoflow.cli doctor                        # System diagnostics
 ```
 
 ---
 
-## ⚙️ Configuration
+## Features
 
-### Environment Variables (`.env`)
+| Feature | Status | Description |
+|---------|--------|-------------|
+| AI Shot Planning | ✅ | LLM generates professional shot-by-shot scripts |
+| Chart Rendering | ✅ | Bar, pie, line, scatter charts |
+| Diagram Rendering | ✅ | Mermaid DSL flowcharts |
+| Image Rendering | ✅ | Local/URL images |
+| Text-to-Speech | ✅ | Free edge-tts, multiple voices |
+| Interactive Mode | ✅ | Select visuals, voices before generation |
+| Subtitles | ✅ | ASS format |
+| Video Composition | ✅ | FFmpeg concatenation |
 
-```env
-# LLM Providers (DeepSeek recommended)
-DEEPSEEK_API_KEY=sk-xxx
+---
 
-# TTS (edge-tts is free, optional Azure/ElevenLabs)
-# AZURE_SPEECH_KEY=xxx
+## AI Shot Planning
 
-# Stock Footage (optional)
-# PEXELS_API_KEY=xxx
+Generate professional video scripts with AI:
+
+```bash
+# Plan with topic text
+python -m videoflow.cli plan "公司为什么上市分钱给陌生人？" --duration 60
+
+# Plan from Markdown file
+python -m videoflow.cli plan examples/stock-myths/input.md
+
+# Save plan to file
+python -m videoflow.cli plan "your topic" -o myplan.json
+
+# Generate video from plan
+python -m videoflow.cli generate myplan.json --output out.mp4
 ```
 
-### Config File (`config.toml`)
+After generating the plan, you'll be prompted:
+- **Y**: Continue to video generation
+- **n**: Cancel and save plan
+
+Use `--no-interactive` to skip the confirmation prompt.
+
+Output example:
+```
+✓ Plan: 公司上市，为何分钱给陌生人？
+Style: 快节奏，信息密度高、反认知
+Duration: ~60s (8 shots)
+
+┏━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┓
+┃ Shot ┃ Duration ┃ Visual       ┃ Preview            ┃
+┡━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━┩
+│ S01  │       5s │ title_card  │ [悬念标题] 口播... │
+│ S02  │       8s │ chart (bar) │ [数据对比] 口播... │
+│ S03  │      10s │ diagram     │ [流程图] 口播...   │
+└──────┴──────────┴──────────────┴────────────────────┘
+```
+
+### Visual Types in Shots
+
+| Type | Description | Best For |
+|------|-------------|----------|
+| `title_card` | Title slide | Opening hooks, summaries |
+| `chart` | Bar/Line/Pie | Data comparison, trends |
+| `diagram` | Mermaid flowchart | Process, relationships |
+| `image` | Image with caption | Real photos |
+
+---
+
+## Interactive Mode
+
+By default, the CLI shows a preview and lets you customize:
+
+```bash
+python -m videoflow.cli generate input.md --plan --output out.mp4
+```
+
+```
+                           Shot Plan (8 shots)
+┏━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ ID  ┃ Type       ┃ Duration ┃ Visual/Title        ┃
+┡━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ S01 │ title_card │     6.0s │ 公司明明赚钱...      │
+│ S02 │ chart     │    10.0s │ [bar] IPO融资对比   │
+└─────┴────────────┴──────────┴──────────────────────┘
+
+Customize Visuals:
+Edit visual types for each shot? (y/N): y
+Select visual for S02:
+  1. 📝 标题卡片
+  2. 📊 图表 (Bar/Line/Pie)
+  3. 🔄 流程图 (Mermaid)
+Enter number (default: current): 2  → 切换为图表
+
+TTS Voice:
+  Current: zh-CN-YunxiNeural
+Change voice? (y/N): y
+  1. 🌟 云希 (男声, 活泼阳光)
+  2. 💫 晓晓 (女声, 温暖自然)
+  3. 📺 云扬 (男声, 专业播音)
+  ...
+
+Proceed with video generation? [y]:
+```
+
+### Available TTS Voices
+
+| Voice | Description |
+|-------|-------------|
+| `zh-CN-YunxiNeural` | 🌟 Male, lively sunshine (default) |
+| `zh-CN-XiaoxiaoNeural` | 💫 Female, warm natural |
+| `zh-CN-YunyangNeural` | 📺 Male, professional news |
+| `zh-CN-YunjianNeural` | ⚽ Male, passionate sports |
+| `zh-CN-XiaoyiNeural` | 🎬 Female, cartoon lively |
+| `en-US-AriaNeural` | 🇺🇸 English female |
+
+### Skip Interactive Mode
+
+```bash
+# Non-interactive (for scripts/CI)
+python -m videoflow.cli generate input.md --plan --no-interactive --output out.mp4
+```
+
+---
+
+## Input Format
+
+### Markdown with Visual Blocks
+
+```markdown
+# Video Title
+
+## Section 1
+
+Content here...
+
+:::chart bar
+title: Data Comparison
+data:
+  labels: [A, B, C]
+  values: [100, 200, 150]
+color: default
+:::
+
+```mermaid
+graph LR
+    A --> B --> C
+```
+```
+
+### Supported Visual Blocks
+
+| Block | Syntax |
+|-------|--------|
+| Bar Chart | `:::chart bar` with `data:` |
+| Line Chart | `:::chart line` |
+| Pie Chart | `:::chart pie` |
+| Flowchart | ` ```mermaid` code block |
+| Image | `:::image path: ...` |
+
+---
+
+## Configuration
+
+### Environment Variables
+
+Set API keys in `.env`:
+
+```bash
+DEEPSEEK_API_KEY=sk-xxx      # LLM planning (recommended)
+OPENAI_API_KEY=sk-xxx        # Alternative LLM
+```
+
+### Config File
+
+Edit `config.toml`:
 
 ```toml
-[runtime]
-workspace_root = "./workspace"
-log_level = "INFO"
-
-[llm]
-provider = "deepseek"  # deepseek, openai, anthropic, or "none"
-deepseek_model = "deepseek-chat"
-temperature = 0.7
-
 [tts]
 provider = "edge"
 voice = "zh-CN-YunxiNeural"
@@ -224,146 +227,39 @@ voice = "zh-CN-YunxiNeural"
 width = 1080
 height = 1920
 fps = 30
-
-[align]
-provider = "none"  # or "mcp" for word-level subtitles
 ```
 
 ---
 
-## 🧪 Testing
+## Troubleshooting
 
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run with coverage
-pytest tests/ --cov=src/videoflow
-
-# Integration tests (requires FFmpeg + network)
-pytest tests/ -v --run-integration
-```
-
----
-
-## 📁 Project Structure
-
-```
-video-flow/
-├── src/videoflow/
-│   ├── cli.py              # video-agent CLI
-│   ├── config.py           # TOML config loader
-│   ├── models.py           # Pydantic models (Shot, ShotList)
-│   ├── parser.py           # Markdown → ShotList
-│   ├── pipeline.py         # Pipeline orchestration
-│   ├── state.py            # SQLite state management
-│   ├── tts.py              # Edge TTS wrapper
-│   ├── subtitles.py        # ASS subtitle generator
-│   ├── renderer.py         # Pillow + Ken Burns
-│   ├── templates.py        # Template registry
-│   ├── mermaid.py          # Mermaid CLI wrapper
-│   └── providers/          # LLM/TTS providers
-│       ├── __init__.py     # Provider registry
-│       └── llm_parser.py   # LLM parsing
-├── mcp_servers/
-│   ├── align/              # Word-level subtitle alignment
-│   ├── playwright/         # Screen capture
-│   └── remotion/           # Animated visuals (6 types)
-├── ui/                     # Streamlit review UI
-├── tests/                  # Unit + integration tests
-├── examples/stock-myths/   # Demo input
-├── docs/                   # PRD documentation
-├── config.toml             # Default config
-└── .env.example            # Environment template
-```
-
----
-
-## 📋 Feature Matrix
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Rule-based Parser | ✅ | Works offline |
-| LLM Parser (DeepSeek) | ✅ | Best for Chinese |
-| LLM Parser (OpenAI) | ✅ | GPT-4o |
-| LLM Parser (Anthropic) | ✅ | Claude |
-| TTS (edge-tts) | ✅ | Free, high quality |
-| Ken Burns Effect | ✅ | Image pan/zoom |
-| Mermaid Diagrams | ✅ | SVG rendering |
-| Streamlit UI | ✅ | Review interface |
-| Template System | ✅ | 4 built-in |
-| Subtitle Alignment | ✅ | Via MCP |
-| Screen Capture | ⚠️ | Via MCP |
-| Animated Visuals | ⚠️ | Via MCP (6 types) |
-| SQLite State | ✅ | Full tracking |
-
----
-
-## 🆘 Troubleshooting
-
-### "No module named 'videoflow'"
-
+**"No module named 'videoflow'"**
 ```bash
 source .venv/bin/activate
 pip install -e .
 ```
 
-### "CJK font not found"
-
-The renderer requires Chinese fonts. Install with:
-
+**Missing CJK fonts**
 ```bash
 # macOS
 brew install font-noto-sans-cjk
-
 # Ubuntu
 sudo apt install fonts-noto-cjk
 ```
 
-### FFmpeg without libass
-
-Subtitles won't be burned in, but ASS files are still generated:
-
-```bash
-# Install FFmpeg with libass
-brew install ffmpeg --with-libass  # macOS
-```
-
-### LLM parsing fails
-
-```bash
-# Verify API key is set
-echo $DEEPSEEK_API_KEY
-
-# Or use rule-based parser (offline)
-video-agent parse input.md
-```
+**Subtitles not burned in**
+Homebrew FFmpeg doesn't include libass. ASS files are still generated alongside MP4.
 
 ---
 
-## 📚 Documentation
+## Related Documents
 
-| Document | Language | Description |
-|---------|----------|-------------|
-| [README.md](./README.md) | EN+ZH | This file, quick navigation |
-| [README_en.md](./README_en.md) | English | Full English documentation |
-| [README_zh.md](./README_zh.md) | 中文 | Complete Chinese documentation |
-| [PRD_zh.md](./docs/PRD_zh.md) | 中文 | Product Requirements Document |
-| [TODO_LIST.md](./TODO_LIST.md) | EN | Development roadmap |
+- [中文文档](./README_zh.md)
+- [Product Requirements](./docs/PRD_zh.md)
+- [Development Roadmap](./TODO_LIST.md)
 
 ---
 
-## 🤝 Contributing
-
-See [`TODO_LIST.md`](./TODO_LIST.md) for the development roadmap. Areas for contribution:
-
-- Mermaid/Remotion/Playwright integration
-- Additional TTS/LLM providers
-- More video templates
-- UI/UX improvements
-
----
-
-## 📄 License
+## License
 
 [MIT](./LICENSE)

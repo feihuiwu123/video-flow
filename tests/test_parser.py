@@ -16,14 +16,21 @@ class TestSplitParagraphs:
 
     def test_body_joined_on_spaces(self):
         md = "## Head\nline one.\nline two."
-        (heading, body), = _split_paragraphs(md)
+        sections = _split_paragraphs(md)
+        # sections now return 4-tuples: (heading, body, visual, renderer)
+        assert len(sections) == 1
+        heading, body, *_ = sections[0]
         assert heading == "Head"
         assert body == "line one. line two."
 
     def test_heading_without_body_uses_heading_as_body(self):
         md = "## Only heading"
         sections = _split_paragraphs(md)
-        assert sections == [("Only heading", "Only heading")]
+        # sections now return 4-tuples
+        assert len(sections) == 1
+        heading, body, *_ = sections[0]
+        assert heading == "Only heading"
+        assert body == "Only heading"
 
     def test_body_without_heading_uses_first_chars(self):
         md = "Just a body paragraph without any heading at all."

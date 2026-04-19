@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -14,10 +15,20 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+# Load .env file if present
+from pathlib import Path as PPath
+_env_path = PPath(".env")
+if _env_path.exists():
+    for line in _env_path.read_text().split("\n"):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, val = line.partition("=")
+            os.environ[key.strip()] = val.strip()
+
 from videoflow import state
 from videoflow.config import Config, load_config
 from videoflow.models import ShotList
-from videoflow.parser import parse_file
+from videoflow.parser import parse_file as rule_based_parse
 from videoflow.pipeline import (
     finalize,
     render_all_scenes,
@@ -51,9 +62,118 @@ def _resolve_db_path(cfg: Config) -> Path:
     return state.default_db_path(cfg.runtime.workspace_root)
 
 
+def _try_llm_parse(input_path: Path) -> tuple[Optional[ShotList], Optional[str]]:
+    """Try to parse using LLM. Returns (shotlist, provider_name) or (None, None)."""
+    from videoflow.providers import get_llm_provider
+    from videoflow.providers.llm_parser import parse_file as llm_parse_file
+
+    # Try auto-detect provider
+    provider = get_llm_provider(None)
+    if provider is None:
+        return None, None
+
+    try:
+        shotlist = llm_parse_file(input_path, provider.name)
+        return shotlist, provider.name
+    except Exception as e:
+        console.print(f"[dim]LLM parse failed: {e}[/dim]")
+        return None, None
+
+
+def _show_shot_preview(shotlist: ShotList) -> None:
+    """Display a preview table of shots."""
+    table = Table(title=f"Shot Plan ({len(shotlist.shots)} shots)")
+    table.add_column("ID", style="cyan")
+    table.add_column("Type", style="magenta")
+    table.add_column("Duration", justify="right")
+    table.add_column("Visual/Title")
+
+    for shot in shotlist.shots:
+        visual_type = shot.visual.type if hasattr(shot.visual, 'type') else "title_card"
+        # Show visual details
+        if visual_type == "chart":
+            title = f"📊 {shot.visual.title or shot.visual.chart_type}"
+        elif visual_type == "diagram":
+            title = f"📝 {shot.visual.title or 'flowchart'}"
+        elif visual_type == "image":
+            title = f"🖼️ {shot.visual.caption or shot.visual.path[:20]}"
+        elif hasattr(shot.visual, 'text'):
+            title = shot.visual.text[:40] + ("…" if len(shot.visual.text) > 40 else "")
+        else:
+            title = shot.narration[:35] + ("…" if len(shot.narration) > 35 else "")
+        table.add_row(
+            shot.shot_id,
+            visual_type,
+            f"{shot.duration:.1f}s",
+            title
+        )
+    console.print(table)
+
+
+def _show_voice_selection() -> str:
+    """Show voice options and let user select."""
+    # Common Chinese voices
+    voices = [
+        ("zh-CN-YunxiNeural", "🌟 云希 (男声, 活泼阳光)"),
+        ("zh-CN-XiaoxiaoNeural", "💫 晓晓 (女声, 温暖自然)"),
+        ("zh-CN-YunyangNeural", "📺 云扬 (男声, 专业播音)"),
+        ("zh-CN-YunjianNeural", "⚽ 云健 (男声, 激情澎湃)"),
+        ("zh-CN-XiaoyiNeural", "🎬 小艺 (女声, 活泼可爱)"),
+        ("zh-CN-YunxiaNeural", "🐱 云夏 (男声, 可爱卡通)"),
+        ("zh-CN-liaoning-XiaobeiNeural", "🇨🇳 小北 (东北女声)"),
+        ("en-US-AriaNeural", "🇺🇸 Aria (English, female)"),
+        ("en-GB-SoniaNeural", "🇬🇧 Sonia (English, female)"),
+    ]
+
+    console.print("\n[bold]Select TTS Voice:[/bold]")
+    for i, (voice_id, desc) in enumerate(voices, 1):
+        console.print(f"  {i}. {desc}")
+
+    while True:
+        choice = typer.prompt("Enter number (default: 1=云希)", default="1", show_default=False)
+        if not choice:
+            return voices[0][0]
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(voices):
+                return voices[idx][0]
+            console.print("[yellow]Invalid choice, try again[/yellow]")
+        except ValueError:
+            console.print("[yellow]Please enter a number[/yellow]")
+
+
+def _show_visual_selection(shot) -> str:
+    """Show visual type options for a shot and let user select."""
+    from videoflow.models import TitleCardVisual, ChartVisual, DiagramVisual, ImageVisual
+
+    visual_types = [
+        ("title_card", "📝 标题卡片 (Title Card)"),
+        ("chart", "📊 图表 (Bar/Line/Pie)"),
+        ("diagram", "🔄 流程图 (Mermaid)"),
+    ]
+
+    console.print(f"\n[bold]Select visual for {shot.shot_id}:[/bold]")
+    console.print(f"  Narration: {shot.narration[:50]}...")
+    for i, (vtype, desc) in enumerate(visual_types, 1):
+        current = " ← current" if shot.visual.type == vtype else ""
+        console.print(f"  {i}. {desc}{current}")
+
+    while True:
+        choice = typer.prompt("Enter number (default: current)", default="", show_default=False)
+        if not choice:
+            return shot.visual.type  # Keep current
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(visual_types):
+                return visual_types[idx][0]
+            console.print("[yellow]Invalid choice[/yellow]")
+        except ValueError:
+            console.print("[yellow]Please enter a number[/yellow]")
+
+
 @app.command()
 def generate(
-    input_path: Path = typer.Argument(..., exists=True, dir_okay=False, help="Markdown script."),
+    input_path: Path = typer.Argument(..., exists=True, dir_okay=False, help="Markdown script or JSON plan file."),
     output: Path = typer.Option(
         Path("workspace/demo.mp4"), "--output", "-o", help="Final MP4 path."
     ),
@@ -67,17 +187,245 @@ def generate(
     no_track: bool = typer.Option(
         False, "--no-track", help="Skip SQLite event tracking for this run."
     ),
+    llm: bool = typer.Option(
+        False, "--llm", help="Use LLM to parse and plan shots (auto-detects API key)."
+    ),
+    no_preview: bool = typer.Option(
+        False, "--no-preview", help="Skip all confirmation prompts."
+    ),
+    interactive: bool = typer.Option(
+        True, "--interactive/--no-interactive", help="Interactive mode with selections (Y/n)."
+    ),
+    plan: bool = typer.Option(
+        False, "--plan", help="Use the plan command to generate shot plan first, then generate video."
+    ),
 ) -> None:
-    """End-to-end: Markdown → MP4."""
-    cfg = load_config(config_path if config_path and config_path.exists() else None)
-    if voice:
-        cfg.tts.voice = voice
-    _configure_logging(cfg.runtime.log_level)
+    """End-to-end: Markdown → MP4.
 
+    By default, uses rule-based parsing. Use --llm to enable LLM-powered shot planning.
+    Use --plan to generate professional shot plan first.
+    Use --no-interactive to skip all prompts.
+
+    Examples:
+        video-agent generate input.md --output out.mp4
+        video-agent generate "topic content" --plan --output out.mp4
+        video-agent generate plan.json --output out.mp4
+    """
+    cfg = load_config(config_path if config_path and config_path.exists() else None)
+    _configure_logging(cfg.runtime.log_level)
     db_path = None if no_track else _resolve_db_path(cfg)
 
-    console.print(f"[bold cyan]Videoflow[/bold cyan] · generating from {input_path}")
-    project = run_pipeline(input_path, output, config=cfg, db_path=db_path)
+    # Check if input is JSON (plan file) or Markdown
+    shotlist = None
+    llm_provider_name = None
+
+    if input_path.suffix == ".json":
+        # Load from plan JSON
+        from videoflow.shot_planner import ShotPlan, ShotPlanResult
+
+        data = json.loads(input_path.read_text(encoding="utf-8"))
+        shots_data = []
+        cursor = 0.0
+        for s in data.get("shots", []):
+            duration = s.get("duration", 5)
+            shots_data.append(ShotPlan(
+                shot_id=s.get("shot_id", f"S{len(shots_data)+1:02d}"),
+                start=cursor,
+                end=cursor + duration,
+                duration=duration,
+                visual_type=s.get("visual_type", "title_card"),
+                visual_title=s.get("visual_title", ""),
+                visual_data=s.get("visual_data"),
+                narration=s.get("narration", ""),
+                key_points=s.get("key_points", []),
+            ))
+            cursor += duration
+
+        plan_result = ShotPlanResult(
+            title=data.get("title", "Untitled"),
+            total_duration=data.get("total_duration", cursor),
+            style=data.get("style", ""),
+            shots=shots_data,
+        )
+        shotlist = plan_result.to_shotlist()
+        console.print(f"[bold cyan]Videoflow[/bold cyan] · loaded from plan: {input_path}")
+        console.print(f"[green]✓[/green] Title: {plan_result.title}")
+        console.print(f"[cyan]Shots:[/cyan] {len(shotlist.shots)} ({plan_result.total_duration:.0f}s)")
+
+    elif plan:
+        # Generate plan first using LLM
+        from videoflow.shot_planner import plan_shots
+
+        content = input_path.read_text(encoding="utf-8") if input_path.exists() else str(input_path)
+        console.print(f"[bold cyan]Videoflow[/bold cyan] · generating shot plan...")
+
+        try:
+            plan_result = plan_shots(content, "deepseek")
+        except ValueError as e:
+            console.print(f"[red]✗[/red] {e}")
+            raise typer.Exit(code=1)
+
+        # Show plan preview
+        console.print()
+        console.print(f"[bold green]✓[/bold green] Title: {plan_result.title}")
+        console.print(f"[cyan]Style:[/cyan] {plan_result.style}")
+        console.print(f"[cyan]Duration:[/cyan] ~{plan_result.total_duration:.0f}s ({len(plan_result.shots)} shots)")
+
+        table = Table(title="Shot Plan Preview")
+        table.add_column("Shot", style="cyan")
+        table.add_column("Duration", justify="right")
+        table.add_column("Visual")
+        table.add_column("Narration")
+
+        for shot in plan_result.shots:
+            visual = f"[{shot.visual_type}] {shot.visual_title[:25] if shot.visual_title else '-'}"
+            narration = shot.narration[:30] + "..." if len(shot.narration) > 30 else shot.narration
+            table.add_row(shot.shot_id, f"{shot.duration:.0f}s", visual, narration)
+
+        console.print(table)
+
+        if not no_preview:
+            console.print()
+            confirm = typer.prompt(
+                "Proceed with video generation?",
+                default="y",
+                show_default=True,
+            ).lower()
+            if confirm not in ("y", "yes", ""):
+                console.print("[yellow]Cancelled[/yellow]")
+                raise typer.Exit(code=0)
+
+        shotlist = plan_result.to_shotlist()
+
+        # Save plan
+        plan_file = output.parent / f"{output.stem}_plan.json"
+        plan_file.parent.mkdir(parents=True, exist_ok=True)
+        plan_data = {
+            "title": plan_result.title,
+            "total_duration": plan_result.total_duration,
+            "style": plan_result.style,
+            "shots": [
+                {
+                    "shot_id": s.shot_id,
+                    "duration": s.duration,
+                    "visual_type": s.visual_type,
+                    "visual_title": s.visual_title,
+                    "visual_data": s.visual_data,
+                    "narration": s.narration,
+                    "key_points": s.key_points,
+                }
+                for s in plan_result.shots
+            ]
+        }
+        plan_file.write_text(json.dumps(plan_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"[dim]Plan saved to {plan_file}[/dim]")
+
+    else:
+        console.print(f"[bold cyan]Videoflow[/bold cyan] · generating from {input_path}")
+
+        # Try LLM parsing if requested or if llm config is set
+        if llm or cfg.llm.provider != "none":
+            shotlist, llm_provider_name = _try_llm_parse(input_path)
+            if shotlist:
+                console.print(f"[green]✓[/green] LLM parsed with {llm_provider_name}: {len(shotlist.shots)} shots")
+            elif llm:
+                console.print("[yellow]⚠[/yellow] LLM not available (no API key), using rule-based parser")
+
+        # Fall back to rule-based parsing
+        if shotlist is None:
+            shotlist = rule_based_parse(input_path)
+            console.print(f"[cyan]Using rule-based parser:[/cyan] {len(shotlist.shots)} shots")
+
+    if llm or cfg.llm.provider != "none":
+        shotlist, llm_provider_name = _try_llm_parse(input_path)
+        if shotlist:
+            console.print(f"[green]✓[/green] LLM parsed with {llm_provider_name}: {len(shotlist.shots)} shots")
+        elif llm:
+            console.print("[yellow]⚠[/yellow] LLM not available (no API key), using rule-based parser")
+
+    # Fall back to rule-based parsing
+    if shotlist is None:
+        shotlist = rule_based_parse(input_path)
+        console.print(f"[cyan]Using rule-based parser:[/cyan] {len(shotlist.shots)} shots")
+
+    # Interactive mode: show preview and let user configure options
+    selected_voice = voice or cfg.tts.voice
+    if not no_preview and interactive:
+        console.print()
+        _show_shot_preview(shotlist)
+
+        console.print()
+        # Visual type selection per shot
+        console.print("[bold]Customize Visuals:[/bold]")
+        visual_choice = typer.prompt(
+            "Edit visual types for each shot? (y/N)",
+            default="n",
+            show_default=False,
+        ).lower()
+        if visual_choice in ("y", "yes"):
+            from videoflow.models import TitleCardVisual, ChartVisual, DiagramVisual
+            for shot in shotlist.shots:
+                new_type = _show_visual_selection(shot)
+                # Create new visual based on selection
+                if new_type == "title_card":
+                    shot.visual = TitleCardVisual(
+                        text=shot.narration[:50],
+                        background="dark"
+                    )
+                elif new_type == "chart":
+                    shot.visual = ChartVisual(
+                        chart_type="bar",
+                        data={"labels": ["A", "B"], "values": [50, 50]},
+                        title="Chart"
+                    )
+                elif new_type == "diagram":
+                    shot.visual = DiagramVisual(
+                        mermaid_code="graph LR\n    A-->B",
+                        title="Diagram"
+                    )
+            console.print("[green]✓[/green] Visuals updated")
+
+        console.print()
+        # Voice selection
+        console.print("[bold]TTS Voice:[/bold]")
+        console.print(f"  Current: [cyan]{selected_voice}[/cyan]")
+        voice_choice = typer.prompt(
+            "Change voice? (y/N)",
+            default="n",
+            show_default=False,
+        ).lower()
+        if voice_choice in ("y", "yes"):
+            selected_voice = _show_voice_selection()
+            console.print(f"  [green]Selected:[/green] {selected_voice}")
+
+        console.print()
+        confirm = typer.prompt(
+            "Proceed with video generation?",
+            default="y",
+            show_default=True,
+        ).lower()
+
+        if confirm not in ("y", "yes", ""):
+            console.print("[yellow]Cancelled by user[/yellow]")
+            raise typer.Exit(code=0)
+    else:
+        # Non-interactive: just show summary
+        console.print(f"[cyan]Shots:[/cyan] {len(shotlist.shots)}")
+        console.print(f"[cyan]Voice:[/cyan] {selected_voice}")
+        console.print(f"[cyan]Output:[/cyan] {output}")
+
+    # Apply selected voice
+    if selected_voice:
+        cfg.tts.voice = selected_voice
+
+    # Run pipeline with the parsed shotlist
+    project = run_pipeline(
+        input_path,
+        output,
+        config=cfg,
+        db_path=db_path,
+        pre_parsed_shotlist=shotlist if shotlist else None
+    )
     console.print(f"[green]✓[/green] Project: {project.project_id}")
     console.print(f"[green]✓[/green] Output : {project.output_path}")
     if project.shotlist:
@@ -85,6 +433,135 @@ def generate(
             f"[green]✓[/green] Shots  : {len(project.shotlist.shots)} · "
             f"duration {project.shotlist.actual_duration:.1f}s"
         )
+
+
+@app.command()
+def plan(
+    content: str = typer.Argument(..., help="Topic, content, or path to Markdown file."),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Save plan to file."),
+    duration: Optional[int] = typer.Option(None, "--duration", "-d", help="Target duration in seconds."),
+    provider: str = typer.Option("deepseek", "--provider", "-p", help="LLM provider: deepseek, openai, anthropic"),
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="TOML config file."),
+    no_interactive: bool = typer.Option(False, "--no-interactive", help="Skip Y/n prompt to continue."),
+    no_track: bool = typer.Option(False, "--no-track", help="Skip SQLite event tracking."),
+) -> None:
+    """Generate professional shot plan using LLM.
+
+    Examples:
+        video-agent plan "公司为什么上市分钱给陌生人"
+        video-agent plan "量子力学入门" --duration 60
+        video-agent plan "投资理财技巧" -o plan.json
+        video-agent plan examples/stock-myths/input.md
+    """
+    from videoflow.shot_planner import plan_shots
+
+    cfg = load_config(config_path if config_path and config_path.exists() else None)
+    _configure_logging(cfg.runtime.log_level)
+    db_path = None if no_track else _resolve_db_path(cfg)
+
+    console.print(f"[bold cyan]Videoflow[/bold cyan] · planning shots...")
+
+    # Check if content is a file path
+    content_path = Path(content)
+    if content_path.exists() and content_path.is_file():
+        console.print(f"[dim]Reading from file: {content}[/dim]")
+        content = content_path.read_text(encoding="utf-8")
+        # Extract title from first # heading
+        first_line = content.split("\n")[0]
+        if first_line.startswith("# "):
+            file_title = first_line[2:].strip()
+            console.print(f"[dim]Title: {file_title}[/dim]")
+    elif not content_path.exists():
+        # It's a topic text - use as is
+        pass
+
+    try:
+        result = plan_shots(content, provider, duration)
+    except ValueError as e:
+        console.print(f"[red]✗[/red] {e}")
+        raise typer.Exit(code=1)
+
+    # Display plan
+    console.print()
+    console.print(f"[bold green]✓[/bold green] Plan: {result.title}")
+    console.print(f"[cyan]Style:[/cyan] {result.style}")
+    console.print(f"[cyan]Duration:[/cyan] ~{result.total_duration:.0f}s ({len(result.shots)} shots)")
+    console.print()
+
+    # Show shot table
+    table = Table(title="Shot Plan")
+    table.add_column("Shot", style="cyan")
+    table.add_column("Duration", justify="right")
+    table.add_column("Visual", style="magenta")
+    table.add_column("Preview")
+
+    for shot in result.shots:
+        visual_desc = f"{shot.visual_type}"
+        if shot.visual_data:
+            if "chart_type" in shot.visual_data:
+                visual_desc += f" ({shot.visual_data['chart_type']})"
+        visual_preview = shot.visual_title[:30] if shot.visual_title else shot.narration[:30]
+        narration_preview = shot.narration[:25] + "..." if len(shot.narration) > 25 else shot.narration
+        table.add_row(
+            shot.shot_id,
+            f"{shot.duration:.0f}s",
+            visual_desc,
+            f"[{visual_preview}] {narration_preview}"
+        )
+
+    console.print(table)
+
+    # Prompt to proceed with video generation
+    if not no_interactive:
+        console.print()
+        confirm = typer.prompt(
+            "Proceed with video generation?",
+            default="y",
+            show_default=True,
+        ).lower()
+
+        if confirm in ("y", "yes", ""):
+            # Launch video generation with the plan
+            console.print()
+            console.print(f"[bold cyan]Videoflow[/bold cyan] · generating video...")
+            project = run_pipeline(
+                None,  # No input file - using pre-parsed shotlist
+                output or Path("workspace/plan_output.mp4"),
+                config=cfg,
+                db_path=db_path,
+                pre_parsed_shotlist=result.to_shotlist(),
+            )
+            console.print(f"[green]✓[/green] Project: {project.project_id}")
+            console.print(f"[green]✓[/green] Output : {project.output_path}")
+        else:
+            console.print("[yellow]Cancelled by user[/yellow]")
+            raise typer.Exit(code=0)
+    else:
+        console.print(f"\n[dim]Use --no-interactive to skip this prompt[/dim]")
+
+    # Save if requested
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        # Save as JSON
+        data = {
+            "title": result.title,
+            "total_duration": result.total_duration,
+            "style": result.style,
+            "shots": [
+                {
+                    "shot_id": s.shot_id,
+                    "duration": s.duration,
+                    "visual_type": s.visual_type,
+                    "visual_title": s.visual_title,
+                    "visual_data": s.visual_data,
+                    "narration": s.narration,
+                    "key_points": s.key_points,
+                }
+                for s in result.shots
+            ]
+        }
+        output.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"\n[green]✓[/green] Saved to {output}")
 
 
 @app.command()
