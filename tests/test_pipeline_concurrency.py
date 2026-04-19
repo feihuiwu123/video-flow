@@ -87,7 +87,7 @@ def test_visuals_parallel_preserves_order(tmp_path: Path):
         time.sleep(0.01 * (5 - idx))
         out.write_bytes(b"PNG " + shot.shot_id.encode())
 
-    with patch("videoflow.pipeline.render_title_card", side_effect=fake_render):
+    with patch("videoflow.pipeline.render_visual", side_effect=fake_render):
         render_all_visuals(shotlist, tmp_path / "visuals", spec, max_concurrency=4)
 
     for s in shotlist.shots:
