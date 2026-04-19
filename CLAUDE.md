@@ -27,6 +27,14 @@ video-agent parse  <input.md>                     # Markdown → Shot JSON
 video-agent tts    <project>/shots.json --output <project>/audio
 video-agent render <project_dir> --output out.mp4
 
+# State & orchestration (M3.1)
+video-agent init-db                               # Create SQLite index (idempotent)
+video-agent list [--status S] [--json]            # Recent projects
+video-agent status <project_id>                   # Stage readiness as JSON
+video-agent resume <project_id>                   # Idempotently rerun missing stages
+video-agent trace  <project_id> [--stage S] [-n N]# Tail event log
+video-agent doctor                                # FFmpeg / CJK font / DB / MCP health
+
 # Unit tests (offline, network mocked)
 pytest tests/ -v
 
@@ -38,6 +46,13 @@ pytest tests/ -v --run-integration
 ```
 
 There is no linter or formatter configured — do not introduce one without discussing with the user.
+
+## Orchestration model (M3.1+)
+
+- **Skills are the orchestrator**. Entry point: `.claude/skills/videoflow/SKILL.md` → dispatches to `generate.md` (auto), `review.md` (light-mode human checkpoint), `resume.md` (idempotent continuation).
+- **SQLite is an index + event log, not truth.** `videoflow.state` manages three tables (`projects` / `events` / `reviews`) at `<workspace_root>/videoflow.db`. **Filesystem is the truth source** for artifacts; `state.stage_readiness(workspace_dir)` is authoritative for what's done.
+- **Resume is crash-safe**: a stage that produced no files re-runs from scratch on `video-agent resume <id>`; completed stages are skipped. Don't bake pipeline assumptions into the DB — always derive from files.
+- **Event recording is optional**. `run_pipeline(..., db_path=None)` disables all DB writes. Tests use this path to keep SQLite out of unit runs.
 
 ## Architecture
 

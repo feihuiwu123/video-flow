@@ -2,6 +2,12 @@
 
 Stage order (PRD §5 happy path, minus the review interrupts):
     parser → tts → subtitles → ffmpeg scenes → ffmpeg concat
+
+State hooks
+-----------
+Stages optionally emit events to a SQLite event log (see ``videoflow.state``).
+Callers pass a ``db_path`` — if omitted, the pipeline runs without touching
+the DB (this keeps the demo path and unit tests free of SQLite).
 """
 
 from __future__ import annotations
@@ -10,8 +16,9 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+from videoflow import state
 from videoflow.config import Config
 from videoflow.ffmpeg_wrapper import (
     RenderSpec,
@@ -27,6 +34,24 @@ from videoflow.subtitles import AssStyle, write_ass
 from videoflow.tts import EdgeTTSProvider, TTSProvider, synthesize_all
 
 logger = logging.getLogger(__name__)
+
+
+def _emit(
+    db_path: Optional[Path],
+    project_id: str,
+    stage: str,
+    status: str,
+    payload: Optional[dict[str, Any]] = None,
+) -> None:
+    """Fire-and-forget event recorder. No-op when ``db_path`` is None."""
+    if db_path is None:
+        return
+    try:
+        state.record_event(
+            db_path, project_id=project_id, stage=stage, status=status, payload=payload
+        )
+    except Exception:  # pragma: no cover — observability must not kill the run.
+        logger.exception("Failed to record event %s/%s/%s", project_id, stage, status)
 
 
 def _render_spec_from_config(cfg: Config) -> RenderSpec:
@@ -173,55 +198,7 @@ def finalize(
     return final_path
 
 
-def run_pipeline(
-    input_path: Path,
-    output_path: Path,
-    config: Optional[Config] = None,
-    provider: Optional[TTSProvider] = None,
-    workspace_root: Optional[Path] = None,
-) -> Project:
-    """Blocking end-to-end run. Returns the finished Project record."""
-    cfg = config or Config()
-    workspace_root = workspace_root or cfg.runtime.workspace_root
-    workspace_root.mkdir(parents=True, exist_ok=True)
-
-    project = Project.new(workspace_root, input_path=input_path)
-    logger.info("Project %s created at %s", project.project_id, project.workspace_dir)
-
-    # 1. Parse.
-    shotlist = parse_file(input_path)
-    (project.workspace_dir / "shots_draft.json").write_text(
-        shotlist.model_dump_json(indent=2), encoding="utf-8"
-    )
-
-    # 2. TTS (populates audio_file + real durations).
-    tts_provider = provider or EdgeTTSProvider(
-        voice=cfg.tts.voice, rate=cfg.tts.rate, pitch=cfg.tts.pitch
-    )
-    durations = asyncio.run(
-        run_tts(shotlist, project.workspace_dir / "audio", tts_provider)
-    )
-    shotlist.retime_from_audio(durations)
-    (project.workspace_dir / "shots.json").write_text(
-        shotlist.model_dump_json(indent=2), encoding="utf-8"
-    )
-
-    # 3. Subtitles.
-    subtitle_path = project.workspace_dir / "subtitles" / "final.ass"
-    write_ass(shotlist, subtitle_path, _ass_style_from_config(cfg))
-
-    # 4. Render visuals (title card PNGs) + scenes + finalize.
-    spec = _render_spec_from_config(cfg)
-    render_all_visuals(shotlist, project.workspace_dir / "visuals", spec)
-    scene_paths = render_all_scenes(
-        shotlist, project.workspace_dir / "scenes", subtitle_path, spec
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    finalize(scene_paths, subtitle_path, output_path, spec)
-
-    project.shotlist = shotlist
-    project.output_path = output_path
-    project.status = project.status.__class__.DONE  # type: ignore[attr-defined]
+def _write_project_summary(project: Project, output_path: Path, shotlist: ShotList) -> None:
     (project.workspace_dir / "project.json").write_text(
         json.dumps(
             {
@@ -235,4 +212,286 @@ def run_pipeline(
         ),
         encoding="utf-8",
     )
+
+
+def run_pipeline(
+    input_path: Path,
+    output_path: Path,
+    config: Optional[Config] = None,
+    provider: Optional[TTSProvider] = None,
+    workspace_root: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+) -> Project:
+    """Blocking end-to-end run. Returns the finished Project record.
+
+    When ``db_path`` is given, the project is indexed into SQLite and each
+    stage emits ``started`` / ``done`` / ``failed`` events. Pass ``None``
+    (the default) to run without persistence — useful for tests.
+    """
+    cfg = config or Config()
+    workspace_root = workspace_root or cfg.runtime.workspace_root
+    workspace_root.mkdir(parents=True, exist_ok=True)
+
+    project = Project.new(workspace_root, input_path=input_path)
+    logger.info("Project %s created at %s", project.project_id, project.workspace_dir)
+
+    if db_path is not None:
+        state.init_db(db_path)
+        state.upsert_project(
+            db_path,
+            project_id=project.project_id,
+            workspace_dir=project.workspace_dir,
+            input_path=input_path,
+            output_path=output_path,
+            status="created",
+        )
+
+    pid = project.project_id
+
+    try:
+        # 1. Parse.
+        _emit(db_path, pid, state.STAGE_PARSE, state.STATUS_STARTED)
+        shotlist = parse_file(input_path)
+        (project.workspace_dir / "shots_draft.json").write_text(
+            shotlist.model_dump_json(indent=2), encoding="utf-8"
+        )
+        _emit(
+            db_path,
+            pid,
+            state.STAGE_PARSE,
+            state.STATUS_DONE,
+            {"num_shots": len(shotlist.shots)},
+        )
+        if db_path is not None:
+            state.upsert_project(
+                db_path,
+                project_id=pid,
+                workspace_dir=project.workspace_dir,
+                status="parsed",
+                num_shots=len(shotlist.shots),
+            )
+
+        # 2. TTS (populates audio_file + real durations).
+        _emit(db_path, pid, state.STAGE_TTS, state.STATUS_STARTED)
+        tts_provider = provider or EdgeTTSProvider(
+            voice=cfg.tts.voice, rate=cfg.tts.rate, pitch=cfg.tts.pitch
+        )
+        durations = asyncio.run(
+            run_tts(shotlist, project.workspace_dir / "audio", tts_provider)
+        )
+        shotlist.retime_from_audio(durations)
+        (project.workspace_dir / "shots.json").write_text(
+            shotlist.model_dump_json(indent=2), encoding="utf-8"
+        )
+        _emit(
+            db_path,
+            pid,
+            state.STAGE_TTS,
+            state.STATUS_DONE,
+            {"actual_duration": shotlist.actual_duration},
+        )
+        if db_path is not None:
+            state.upsert_project(
+                db_path,
+                project_id=pid,
+                workspace_dir=project.workspace_dir,
+                status="tts_done",
+                actual_duration=shotlist.actual_duration,
+            )
+
+        # 3. Visuals.
+        _emit(db_path, pid, state.STAGE_RENDER_VISUALS, state.STATUS_STARTED)
+        spec = _render_spec_from_config(cfg)
+        render_all_visuals(shotlist, project.workspace_dir / "visuals", spec)
+        _emit(db_path, pid, state.STAGE_RENDER_VISUALS, state.STATUS_DONE)
+
+        # 4. Subtitles.
+        _emit(db_path, pid, state.STAGE_SUBTITLES, state.STATUS_STARTED)
+        subtitle_path = project.workspace_dir / "subtitles" / "final.ass"
+        write_ass(shotlist, subtitle_path, _ass_style_from_config(cfg))
+        _emit(db_path, pid, state.STAGE_SUBTITLES, state.STATUS_DONE)
+
+        # 5. Scenes.
+        _emit(db_path, pid, state.STAGE_RENDER_SCENES, state.STATUS_STARTED)
+        scene_paths = render_all_scenes(
+            shotlist, project.workspace_dir / "scenes", subtitle_path, spec
+        )
+        _emit(db_path, pid, state.STAGE_RENDER_SCENES, state.STATUS_DONE)
+
+        # 6. Finalize.
+        _emit(db_path, pid, state.STAGE_FINALIZE, state.STATUS_STARTED)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        finalize(scene_paths, subtitle_path, output_path, spec)
+        _emit(
+            db_path,
+            pid,
+            state.STAGE_FINALIZE,
+            state.STATUS_DONE,
+            {"output_path": str(output_path)},
+        )
+    except Exception as exc:  # noqa: BLE001 — log-and-rethrow
+        _emit(db_path, pid, "pipeline", state.STATUS_FAILED, {"error": str(exc)})
+        if db_path is not None:
+            state.upsert_project(
+                db_path,
+                project_id=pid,
+                workspace_dir=project.workspace_dir,
+                status="failed",
+            )
+        raise
+
+    project.shotlist = shotlist
+    project.output_path = output_path
+    project.status = project.status.__class__.DONE  # type: ignore[attr-defined]
+    _write_project_summary(project, output_path, shotlist)
+    if db_path is not None:
+        state.upsert_project(
+            db_path,
+            project_id=pid,
+            workspace_dir=project.workspace_dir,
+            output_path=output_path,
+            status="done",
+            actual_duration=shotlist.actual_duration,
+        )
+    return project
+
+
+def resume_project(
+    project_dir: Path,
+    output_path: Optional[Path] = None,
+    config: Optional[Config] = None,
+    provider: Optional[TTSProvider] = None,
+    db_path: Optional[Path] = None,
+) -> Project:
+    """Idempotently re-run only the stages that haven't produced artifacts.
+
+    Filesystem is the truth source: we consult :func:`state.stage_readiness`
+    and run each missing stage in order. Already-done stages are skipped.
+    Useful for (a) recovering from crashes, (b) picking up after a manual
+    edit to ``shots.json``.
+    """
+    cfg = config or Config()
+    project_dir = Path(project_dir)
+    if not project_dir.exists():
+        raise FileNotFoundError(project_dir)
+
+    # Reconstruct a Project handle from the workspace.
+    pid = project_dir.name
+    if not pid.startswith("proj_"):
+        raise ValueError(f"{project_dir} is not a Videoflow project workspace")
+    project = Project(project_id=pid, workspace_dir=project_dir)
+
+    # Source shotlist: prefer the retimed shots.json if it exists.
+    shots_json = project_dir / "shots.json"
+    shots_draft = project_dir / "shots_draft.json"
+    source = shots_json if shots_json.exists() else shots_draft
+    if not source.exists():
+        raise FileNotFoundError(
+            f"Neither shots.json nor shots_draft.json found in {project_dir}"
+        )
+    shotlist = ShotList.model_validate_json(source.read_text(encoding="utf-8"))
+
+    # Re-attach paths by convention.
+    audio_dir = project_dir / "audio"
+    visuals_dir = project_dir / "visuals"
+    for shot in shotlist.shots:
+        audio = audio_dir / f"{shot.shot_id}.mp3"
+        if audio.exists():
+            shot.audio_file = audio
+        visual = visuals_dir / f"{shot.shot_id}.png"
+        if visual.exists():
+            shot.visual_file = visual
+
+    spec = _render_spec_from_config(cfg)
+    subtitle_path = project_dir / "subtitles" / "final.ass"
+    resolved_output = output_path or (project_dir / "final.mp4")
+
+    readiness = state.stage_readiness(project_dir)
+    logger.info("Resume %s · readiness=%s", pid, readiness)
+
+    try:
+        # TTS (skip if all audio files present).
+        if not readiness[state.STAGE_TTS]:
+            _emit(db_path, pid, state.STAGE_TTS, state.STATUS_STARTED, {"resume": True})
+            tts_provider = provider or EdgeTTSProvider(
+                voice=cfg.tts.voice, rate=cfg.tts.rate, pitch=cfg.tts.pitch
+            )
+            durations = asyncio.run(run_tts(shotlist, audio_dir, tts_provider))
+            shotlist.retime_from_audio(durations)
+            shots_json.write_text(shotlist.model_dump_json(indent=2), encoding="utf-8")
+            _emit(db_path, pid, state.STAGE_TTS, state.STATUS_DONE)
+
+        # Visuals.
+        if not readiness[state.STAGE_RENDER_VISUALS]:
+            _emit(
+                db_path, pid, state.STAGE_RENDER_VISUALS, state.STATUS_STARTED, {"resume": True}
+            )
+            render_all_visuals(shotlist, visuals_dir, spec)
+            _emit(db_path, pid, state.STAGE_RENDER_VISUALS, state.STATUS_DONE)
+
+        # Subtitles.
+        if not readiness[state.STAGE_SUBTITLES]:
+            _emit(
+                db_path, pid, state.STAGE_SUBTITLES, state.STATUS_STARTED, {"resume": True}
+            )
+            write_ass(shotlist, subtitle_path, _ass_style_from_config(cfg))
+            _emit(db_path, pid, state.STAGE_SUBTITLES, state.STATUS_DONE)
+
+        # Scenes.
+        if not readiness[state.STAGE_RENDER_SCENES]:
+            _emit(
+                db_path,
+                pid,
+                state.STAGE_RENDER_SCENES,
+                state.STATUS_STARTED,
+                {"resume": True},
+            )
+            # Ensure audio + visuals are attached before composing.
+            for shot in shotlist.shots:
+                if shot.audio_file is None:
+                    shot.audio_file = audio_dir / f"{shot.shot_id}.mp3"
+                if shot.visual_file is None:
+                    shot.visual_file = visuals_dir / f"{shot.shot_id}.png"
+            render_all_scenes(shotlist, project_dir / "scenes", subtitle_path, spec)
+            _emit(db_path, pid, state.STAGE_RENDER_SCENES, state.STATUS_DONE)
+
+        # Finalize.
+        if not readiness[state.STAGE_FINALIZE]:
+            _emit(
+                db_path, pid, state.STAGE_FINALIZE, state.STATUS_STARTED, {"resume": True}
+            )
+            resolved_output.parent.mkdir(parents=True, exist_ok=True)
+            scene_paths = [
+                project_dir / "scenes" / f"{s.shot_id}.mp4" for s in shotlist.shots
+            ]
+            finalize(scene_paths, subtitle_path, resolved_output, spec)
+            _emit(
+                db_path,
+                pid,
+                state.STAGE_FINALIZE,
+                state.STATUS_DONE,
+                {"output_path": str(resolved_output)},
+            )
+    except Exception as exc:  # noqa: BLE001
+        _emit(db_path, pid, "pipeline", state.STATUS_FAILED, {"error": str(exc), "resume": True})
+        if db_path is not None:
+            state.upsert_project(
+                db_path, project_id=pid, workspace_dir=project_dir, status="failed"
+            )
+        raise
+
+    project.shotlist = shotlist
+    project.output_path = resolved_output
+    project.status = project.status.__class__.DONE  # type: ignore[attr-defined]
+    _write_project_summary(project, resolved_output, shotlist)
+    if db_path is not None:
+        state.upsert_project(
+            db_path,
+            project_id=pid,
+            workspace_dir=project_dir,
+            output_path=resolved_output,
+            status="done",
+            num_shots=len(shotlist.shots),
+            actual_duration=shotlist.actual_duration,
+        )
     return project

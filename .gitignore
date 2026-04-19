@@ -27,6 +27,8 @@ Thumbs.db
 # Videoflow runtime
 workspace/*/
 !workspace/.gitkeep
+workspace/*.db
+workspace/*.db-journal
 *.mp3
 *.wav
 *.mp4
